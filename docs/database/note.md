@@ -1,105 +1,142 @@
-# PARKING IoT — Ghi chú Database
+# PARKING IoT — Ghi chu Database
 
 ---
 
-## Bảng `users`
-Lưu tài khoản đăng nhập của nhân viên vận hành hệ thống.
+## Bang `users`
+Luu tai khoan dang nhap cua nhan vien van hanh he thong.
 
-- `id` — Khoá chính, tự tăng.
-- `username` — Tên đăng nhập, không trùng lặp.
-- `password` — Mật khẩu đã được băm bằng bcrypt, không lưu plaintext.
-- `full_name` — Họ tên hiển thị.
-- `role` — Phân quyền: `admin` có toàn quyền, `operator` chỉ vận hành cổng.
-- `is_active` — Vô hiệu hoá tài khoản mà không cần xoá.
-- `created_at` — Ghi nhận thời điểm tạo tài khoản.
-
----
-
-## Bảng `rfid_cards`
-Lưu thông tin thẻ RFID và chủ xe đã đăng ký với hệ thống.
-
-- `id` — Khoá chính, tự tăng.
-- `uid` — Chuỗi hex đọc từ đầu đọc RC522, định danh duy nhất của thẻ vật lý.
-- `owner_name` / `owner_phone` — Thông tin liên hệ chủ xe.
-- `vehicle_type` — `motorbike` hoặc `car`, dùng để tra bảng giá.
-- `plate_number` — Biển số xe, có thể dùng để đối chiếu camera nếu mở rộng sau.
-- `card_type` — `monthly` (thuê tháng, không tính phí theo giờ) hoặc `guest` (vãng lai, tính phí bình thường).
-- `balance` — Số dư nạp sẵn; hệ thống trừ tự động khi xe ra.
-- `is_active` — Khoá thẻ tạm thời mà không xoá lịch sử.
-- `created_at` — Thời điểm đăng ký thẻ.
+- `_id` — ObjectId do MongoDB sinh.
+- `username` — Ten dang nhap, unique.
+- `password` — Mat khau da bam, khong luu plaintext.
+- `full_name` — Ho ten hien thi.
+- `role` — Phan quyen: `admin` hoac `operator`.
+- `is_active` — Vo hieu hoa tai khoan ma khong can xoa.
+- `created_at` — Thoi diem tao tai khoan.
 
 ---
 
-## Bảng `parking_sessions`
-Ghi lại từng lượt xe vào/ra bãi. Đây là bảng trung tâm của luồng thực thi.
+## Bang `residents`
+Luu thong tin cu dan trong toa nha/chung cu.
 
-- `id` — Khoá chính, tự tăng.
-- `rfid_card_id` — FK trỏ đến thẻ RFID đã quẹt.
-- `gate_type_entry` — Cổng quẹt: `IN` khi vào, `OUT` khi ra.
-- `entry_time` — Thời điểm xe vào, ghi ngay khi quẹt thẻ ở cổng IN.
-- `exit_time` — Thời điểm xe ra; giữ `NULL` khi xe còn trong bãi. Khi `exit_time` có giá trị, phiên coi như hoàn tất.
-- `duration_minutes` — Tổng số phút gửi, tính bằng `exit_time - entry_time`, điền sau khi xe ra.
-- `status` — `active` trong khi xe còn gửi; chuyển sang `completed` khi xe ra và thanh toán xong.
-- `created_at` — Thời điểm tạo bản ghi.
+- `_id` — ObjectId do MongoDB sinh.
+- `full_name` — Ho ten cu dan.
+- `phone` — So dien thoai lien he (co the de trong).
+- `apartment_no` — So can ho.
+- `is_active` — Trang thai con hieu luc cua cu dan.
+- `created_at` — Thoi diem tao ban ghi.
 
 ---
 
-## Bảng `pricing_config`
-Cấu hình đơn giá áp dụng cho từng loại xe. Admin chỉnh sửa qua dashboard.
+## Bang `vehicles`
+Luu thong tin xe, lien ket voi cu dan (neu co).
 
-- `id` — Khoá chính, tự tăng.
-- `vehicle_type` — `motorbike` hoặc `car`, khớp với trường cùng tên ở `rfid_cards`.
-- `price_per_hour` — Đơn giá tính theo giờ (VND).
-- `free_minutes` — Số phút đầu miễn phí (mặc định 15 phút). Xe ra trước thời gian này không bị tính tiền.
-- `is_active` — Cho phép nhiều bản ghi cấu hình tồn tại, chỉ bản ghi `is_active = true` được dùng để tính tiền.
-- `updated_at` — Ghi nhận lần chỉnh giá gần nhất.
-
----
-
-## Bảng `transactions`
-Ghi lại kết quả thanh toán sau khi phiên gửi xe hoàn tất.
-
-- `id` — Khoá chính, tự tăng.
-- `session_id` — FK trỏ đến `parking_sessions`, liên kết giao dịch với phiên cụ thể.
-- `rfid_card_id` — FK trỏ trực tiếp đến thẻ để truy vấn lịch sử nhanh mà không cần JOIN qua session.
-- `amount` — Số tiền tính theo công thức: `(duration_minutes - free_minutes) / 60 × price_per_hour`.
-- `final_amount` — Số tiền thực thu (có thể bằng 0 nếu xe ra trong free_minutes, hoặc điều chỉnh theo chính sách).
-- `payment_status` — `paid` khi trừ balance thành công; `pending` nếu chưa đủ số dư.
-- `paid_at` — Thời điểm giao dịch thành công.
-- `created_at` — Thời điểm tạo bản ghi giao dịch.
+- `_id` — ObjectId do MongoDB sinh.
+- `resident_id` — FK toi `residents` (co the null voi xe vang lai).
+- `vehicle_type` — `motorbike` hoac `car`.
+- `plate_number` — Bien so xe, unique, luu uppercase.
+- `created_at` — Thoi diem tao ban ghi.
 
 ---
 
-## Luồng thực thi chính
+## Bang `rfid_cards`
+Luu the RFID va thong tin dang ky the cho xe.
 
-### 1. Xe vào bãi
-1. Đầu đọc RC522 quét thẻ → lấy `uid`.
-2. Tra bảng `rfid_cards` theo `uid`:
-   - Không tìm thấy hoặc `is_active = false` → từ chối, báo lỗi.
-3. Tạo bản ghi mới trong `parking_sessions` với `entry_time = now()`, `status = active`, `exit_time = NULL`.
-4. Mở barrier cổng vào.
+- `_id` — ObjectId do MongoDB sinh.
+- `uid` — Ma the RFID, unique, luu uppercase.
+- `vehicle_id` — FK toi `vehicles` (hien tai unique 1 the/1 xe).
+- `card_type` — `monthly` hoac `guest`.
+- `is_active` — Khoa/mo the tam thoi.
+- `monthly_fee` — Phi thang (ap dung cho the thang, co the null).
+- `monthly_started_at` — Ngay bat dau chu ky thang.
+- `monthly_expires_at` — Ngay het han chu ky thang.
+- `issued_at` — Thoi diem cap the.
 
-### 2. Xe ra bãi
-1. Đầu đọc RC522 quét thẻ → lấy `uid`.
-2. Tra `rfid_cards` → lấy `rfid_card_id` và `vehicle_type`.
-3. Tìm phiên `active` tương ứng trong `parking_sessions` theo `rfid_card_id`.
-4. Tính `duration_minutes = now() - entry_time`.
-5. Tra `pricing_config` theo `vehicle_type` (lấy bản ghi `is_active = true`).
-6. Tính phí:
-   - Nếu `duration_minutes ≤ free_minutes` → `final_amount = 0`.
-   - Ngược lại → `final_amount = ceil((duration_minutes - free_minutes) / 60) × price_per_hour`.
-7. Kiểm tra `balance` trong `rfid_cards`:
-   - Đủ tiền → trừ `balance`, tạo `transactions` với `payment_status = paid`.
-   - Không đủ → tạo `transactions` với `payment_status = pending`, cảnh báo operator.
-8. Cập nhật `parking_sessions`: điền `exit_time`, `duration_minutes`, chuyển `status = completed`.
-9. Mở barrier cổng ra.
+---
 
-### 3. Nạp tiền / Quản lý thẻ
-- Admin/operator tra cứu thẻ qua `uid` hoặc `plate_number`.
-- Cập nhật `balance` trực tiếp trên bảng `rfid_cards`.
-- Khoá/mở thẻ bằng cờ `is_active`.
+## Bang `pricing_policies`
+Luu chinh sach tinh phi theo loai xe va loai the.
 
-### 4. Thay đổi bảng giá
-- Admin tạo bản ghi mới trong `pricing_config` với giá mới, set `is_active = true`.
-- Đặt `is_active = false` cho bản ghi cũ.
-- Không xoá lịch sử → `transactions` cũ vẫn phản ánh giá tại thời điểm thanh toán qua `final_amount`.
+- `_id` — ObjectId do MongoDB sinh.
+- `vehicle_type` — `motorbike` hoac `car`.
+- `card_type` — `monthly` hoac `guest`.
+- `price_per_hour` — Don gia theo gio.
+- `free_minutes` — So phut mien phi.
+- `is_active` — Chinh sach dang duoc ap dung.
+- `effective_from` — Moc thoi gian bat dau hieu luc.
+
+---
+
+## Bang `parking_sessions`
+Ghi lai tung phien gui xe vao/ra bai. Day la bang trung tam cua luong xu ly.
+
+- `_id` — ObjectId do MongoDB sinh.
+- `vehicle_id` — FK toi `vehicles`.
+- `rfid_card_id` — FK toi `rfid_cards`.
+- `status` — `active`, `completed`, `blocked`.
+- `entry_time` — Thoi diem xe vao.
+- `exit_time` — Thoi diem xe ra (null neu xe chua ra).
+- `duration_minutes` — Tong so phut gui.
+- `entry_plate_text` — Bien so OCR tai cong vao.
+- `exit_plate_text` — Bien so OCR tai cong ra.
+- `entry_plate_confidence` — Do tin cay OCR cong vao (0-100).
+- `exit_plate_confidence` — Do tin cay OCR cong ra (0-100).
+- `entry_image_url` — Link anh chup cong vao.
+- `exit_image_url` — Link anh chup cong ra.
+- `is_plate_mismatch` — Co sai lech bien so vao/ra hay khong.
+- `created_at` — Thoi diem tao ban ghi.
+
+---
+
+## Bang `transactions`
+Luu ket qua thanh toan cua moi phien gui xe.
+
+- `_id` — ObjectId do MongoDB sinh.
+- `session_id` — FK toi `parking_sessions` (unique, 1 phien/1 giao dich).
+- `vehicle_id` — FK toi `vehicles`.
+- `rfid_card_id` — FK toi `rfid_cards`.
+- `pricing_policy_id` — FK toi `pricing_policies` (co the null neu tinh phi thu cong).
+- `amount` — So tien tinh toan ban dau.
+- `final_amount` — So tien thuc thu sau dieu chinh.
+- `payment_status` — `pending`, `paid`, `failed`, `waived`.
+- `paid_at` — Thoi diem thanh toan thanh cong.
+- `created_at` — Thoi diem tao giao dich.
+
+---
+
+## Luong thuc thi chinh
+
+### 1. Xe vao bai
+1. Dau doc quet the -> lay `uid`.
+2. Tra bang `rfid_cards` theo `uid`:
+   - Khong tim thay hoac `is_active = false` -> tu choi.
+3. Lay `vehicle_id` tu the va tao ban ghi moi trong `parking_sessions` voi:
+   - `status = active`
+   - `entry_time = now()`
+   - `exit_time = null`
+4. Neu co camera ANPR, luu `entry_plate_text`, `entry_plate_confidence`, `entry_image_url`.
+5. Mo barrier cong vao.
+
+### 2. Xe ra bai
+1. Quet the -> lay `uid` va tim `rfid_card_id`.
+2. Tim phien `active` trong `parking_sessions` theo `rfid_card_id`.
+3. Tinh `duration_minutes = now() - entry_time`.
+4. Tra `pricing_policies` theo `vehicle_type` + `card_type` (chi lay ban ghi `is_active = true`).
+5. Tinh `amount`/`final_amount` theo quy tac nghiep vu.
+6. Tao `transactions` voi trang thai thanh toan phu hop (`paid`, `pending`, `failed`, `waived`).
+7. Cap nhat `parking_sessions`:
+   - `exit_time`
+   - `duration_minutes`
+   - `status = completed` hoac `blocked` neu vi pham/chua xu ly duoc
+   - Cap nhat thong tin ANPR luc ra + `is_plate_mismatch` neu can.
+8. Mo barrier cong ra neu dat dieu kien nghiep vu.
+
+### 3. Quan ly cu dan/xe/the
+- Tao/sua `residents`.
+- Dang ky `vehicles` cho cu dan, chuan hoa `plate_number`.
+- Cap `rfid_cards`, doi `card_type`, khoa/mo the qua `is_active`.
+- Quan ly chu ky the thang qua `monthly_started_at`, `monthly_expires_at`, `monthly_fee`.
+
+### 4. Quan ly chinh sach gia
+- Tao hoac cap nhat `pricing_policies` theo `vehicle_type` + `card_type`.
+- Su dung co `is_active` + `effective_from` de dieu phoi chinh sach dang hieu luc.
+- Khong xoa lich su giao dich cu de dam bao doi soat.

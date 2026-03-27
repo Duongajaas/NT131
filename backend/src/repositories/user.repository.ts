@@ -1,4 +1,5 @@
-import User, { IUser, UserRole } from '../models/user.models.ts';
+import User from '../models/user.models.ts';
+import type { IUser, UserRole } from '../models/user.models.ts';
 
 export interface CreateUserInput {
 	username: string;

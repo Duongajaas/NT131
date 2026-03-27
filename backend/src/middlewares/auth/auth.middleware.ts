@@ -1,8 +1,9 @@
-import { NextFunction, Request, Response } from 'express';
-import { UserRole } from '../../models/user.models.ts';
+import type { NextFunction, Request, Response } from 'express';
+import type { UserRole } from '../../models/user.models.ts';
+import type { JwtPayload } from '../../utills/password.ts';
 import { findUserById } from '../../repositories/user.repository.ts';
 import AppError from '../../utills/app-error.ts';
-import { JwtPayload, verifyToken } from '../../utills/password.ts';
+import { verifyToken } from '../../utills/password.ts';
 
 const getTokenFromHeader = (authHeader?: string): string | null => {
 	if (!authHeader) {

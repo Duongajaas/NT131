@@ -38,7 +38,6 @@ const vehicleSchema = new Schema<IVehicle>(
   }
 );
 
-vehicleSchema.index({ plate_number: 1 }, { unique: true });
 vehicleSchema.index({ resident_id: 1 });
 
 const Vehicle =

@@ -1,39 +1,43 @@
-import { Request, Response, NextFunction } from 'express';
-import { body, validationResult } from 'express-validator';
+import type { NextFunction, Request, Response } from 'express';
+import Joi, { type ObjectSchema } from 'joi';
 
-export const registerValidator = [
-	body('username')
-		.isString()
-		.isLength({ min: 3, max: 50 })
-		.withMessage('username must be between 3 and 50 characters'),
-	body('password')
-		.isString()
-		.isLength({ min: 6 })
-		.withMessage('password must be at least 6 characters'),
-	body('full_name')
-		.optional()
-		.isString()
-		.isLength({ max: 100 })
-		.withMessage('full_name must be at most 100 characters'),
-	body('role')
-		.optional()
-		.isIn(['admin', 'operator'])
-		.withMessage('role must be admin or operator')
-];
-
-export const loginValidator = [
-	body('username').isString().notEmpty().withMessage('username is required'),
-	body('password').isString().notEmpty().withMessage('password is required')
-];
-
-export const validateRequest = (req: Request, res: Response, next: NextFunction) => {
-	const errors = validationResult(req);
-	if (!errors.isEmpty()) {
-		return res.status(400).json({
-			message: 'Validation failed',
-			errors: errors.array()
-		});
-	}
-
-	next();
+const formatValidationErrors = (error: Joi.ValidationError) => {
+	return error.details.map((detail) => ({
+		field: detail.path.join('.'),
+		message: detail.message
+	}));
 };
+
+const validateBody = (schema: ObjectSchema) => {
+	return (req: Request, res: Response, next: NextFunction) => {
+		const { error, value } = schema.validate(req.body, {
+			abortEarly: false,
+			stripUnknown: true
+		});
+
+		if (error) {
+			return res.status(400).json({
+				message: 'Validation failed',
+				errors: formatValidationErrors(error)
+			});
+		}
+
+		req.body = value;
+		next();
+	};
+};
+
+const registerSchema = Joi.object({
+	username: Joi.string().min(3).max(50).required(),
+	password: Joi.string().min(6).required(),
+	full_name: Joi.string().max(100).optional(),
+	role: Joi.string().valid('admin', 'operator').optional()
+});
+
+const loginSchema = Joi.object({
+	username: Joi.string().required(),
+	password: Joi.string().required()
+});
+
+export const registerValidator = validateBody(registerSchema);
+export const loginValidator = validateBody(loginSchema);

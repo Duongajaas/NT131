@@ -57,7 +57,6 @@ const rfidCardSchema = new Schema<IRfidCard>(
   }
 );
 
-rfidCardSchema.index({ uid: 1 }, { unique: true });
 rfidCardSchema.index({ vehicle_id: 1 }, { unique: true });
 rfidCardSchema.index({ card_type: 1, is_active: 1 });
 

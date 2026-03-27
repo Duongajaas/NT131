@@ -1,4 +1,5 @@
-import { NextFunction, Request, Response } from 'express';
+import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import AppError from '../../utills/app-error.ts';
 
 const errorHandler = (

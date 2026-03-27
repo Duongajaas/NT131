@@ -1,2 +1,2 @@
-export * from './password.ts';
-export { default as AppError } from './app-error.ts';
+export * from './password.js';
+export { default as AppError } from './app-error.js';

@@ -1,4 +1,4 @@
-import { IUser, UserRole } from '../models/user.models.ts';
+import type { IUser, UserRole } from '../models/user.models.ts';
 import { createUser, findUserByUsername } from '../repositories/user.repository.ts';
 import AppError from '../utills/app-error.ts';
 import {

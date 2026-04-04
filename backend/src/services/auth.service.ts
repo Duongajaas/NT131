@@ -20,6 +20,7 @@ interface LoginInput {
 	password: string;
 }
 
+// Xây dựng phản hồi sau khi đăng nhập hoặc đăng ký thành công
 const buildAuthResponse = (user: IUser) => {
 	const payload = {
 		userId: user._id.toString(),
@@ -43,6 +44,7 @@ const buildAuthResponse = (user: IUser) => {
 	};
 };
 
+// Hàm đăng ký người dùng mới (chỉ admin mới có quyền tạo tài khoản)
 export const register = async (input: RegisterInput) => {
 	const existingUser = await findUserByUsername(input.username);
 	if (existingUser) {
@@ -61,6 +63,7 @@ export const register = async (input: RegisterInput) => {
 	return buildAuthResponse(user);
 };
 
+// Hàm đăng nhập người dùng
 export const login = async (input: LoginInput) => {
 	const user = await findUserByUsername(input.username);
 	if (!user) {

@@ -15,6 +15,7 @@ const authRouter = express.Router();
 
 authRouter.post(
 	'/register',
+	authenticateToken,
     authorizeAdmin,
 	registerValidator,
 	asyncHandler(authController.register)

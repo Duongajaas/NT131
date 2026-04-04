@@ -15,6 +15,7 @@ interface ListResidentsInput {
 	is_active?: boolean;
 }
 
+// Tạo mới một cư dân
 export const create = async (input: CreateResidentInput) => {
 	if (input.phone) {
 		const existingResident = await findResidentByPhone(input.phone);
@@ -26,10 +27,12 @@ export const create = async (input: CreateResidentInput) => {
 	return createResident(input);
 };
 
+// Lấy danh sách cư dân với bộ lọc
 export const list = async (input: ListResidentsInput) => {
 	return listResidents(input);
 };
 
+// Lấy thông tin cư dân theo ID
 export const getById = async (residentId: string) => {
 	const resident = await findResidentById(residentId);
 	if (!resident) {
@@ -39,6 +42,7 @@ export const getById = async (residentId: string) => {
 	return resident;
 };
 
+// Cập nhật thông tin cư dân
 export const update = async (residentId: string, input: UpdateResidentInput) => {
 	const resident = await findResidentById(residentId);
 	if (!resident) {
@@ -60,6 +64,7 @@ export const update = async (residentId: string, input: UpdateResidentInput) => 
 	return updatedResident;
 };
 
+// Xóa cư dân
 export const remove = async (residentId: string) => {
 	const resident = await deleteResidentById(residentId);
 	if (!resident) {

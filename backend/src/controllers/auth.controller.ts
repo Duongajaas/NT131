@@ -3,6 +3,7 @@ import * as authService from '../services/auth.service.ts';
 
 export const register = async (req: Request, res: Response) => {
 	const { username, password, full_name, role } = req.body;
+
 	const data = await authService.register({
 		username,
 		password,
@@ -18,6 +19,7 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
 	const { username, password } = req.body;
+
 	const data = await authService.login({ username, password });
 
 	return res.status(200).json({

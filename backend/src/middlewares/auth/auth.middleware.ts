@@ -24,6 +24,7 @@ export const authenticateToken = async (
 	next: NextFunction
 ) => {
 	const token = getTokenFromHeader(req.headers.authorization);
+
 	if (!token) {
 		throw new AppError('Access token is required', 401);
 	}

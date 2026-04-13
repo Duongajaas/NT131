@@ -1,6 +1,13 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-export type SessionStatus = 'active' | 'completed' | 'blocked';
+export type SessionStatus =
+  | 'active'
+  | 'waiting_scan'
+  | 'approved_entry'
+  | 'parked'
+  | 'exit_pending'
+  | 'completed'
+  | 'blocked';
 
 export interface IParkingSession extends Document {
   vehicle_id: Types.ObjectId;
@@ -33,8 +40,16 @@ const parkingSessionSchema = new Schema<IParkingSession>(
     },
     status: {
       type: String,
-      enum: ['active', 'completed', 'blocked'],
-      default: 'active'
+      enum: [
+        'active',
+        'waiting_scan',
+        'approved_entry',
+        'parked',
+        'exit_pending',
+        'completed',
+        'blocked'
+      ],
+      default: 'waiting_scan'
     },
     entry_time: {
       type: Date,

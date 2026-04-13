@@ -1,0 +1,48 @@
+name: NT131
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: NT131-backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/.env:/app/.env:ro
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:3000/api/v1
+        VITE_SOCKET_URL: http://localhost:3000
+        VITE_SIMULATOR_API_KEY: ""
+    container_name: NT131-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  simulator-3d:
+    build:
+      context: ./simulator-3d
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:3000/api/v1
+        VITE_SOCKET_URL: http://localhost:3000
+        VITE_SIMULATOR_API_KEY: ""
+    container_name: NT131-simulator-3d
+    depends_on:
+      - backend
+    ports:
+      - "8081:80"
+    restart: unless-stopped

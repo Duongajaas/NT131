@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import * as residentService from '../services/resident.service.ts';
+import logger from '../utills/logger.ts';
 
 export const create = async (req: Request, res: Response) => {
 	const { full_name, phone, apartment_no, is_active } = req.body;
@@ -18,6 +19,7 @@ export const create = async (req: Request, res: Response) => {
 
 export const list = async (req: Request, res: Response) => {
 	const { search, is_active } = req.query;
+	logger.debug('Resident list requested', { search, is_active });
 	const parsedIsActive =
 		typeof is_active === 'string' ? is_active === 'true' : undefined;
 

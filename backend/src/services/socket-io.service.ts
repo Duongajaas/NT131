@@ -1,11 +1,14 @@
 import type { Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { Server } from 'socket.io';
+import { Server, type Socket } from 'socket.io';
 import { findUserById } from '../repositories/user.repository.ts';
 import { verifyToken, type JwtPayload } from '../utills/password.ts';
+import logger from '../utills/logger.ts';
 import { onRealtimeEvent, publishRealtimeEvent } from './realtime-event-bus.service.ts';
+import hardwareGatewayMock from './hardware-gateway.mock.service.ts';
+import type { GateCommand, GateCommandLog } from '../types/hardware-gateway.ts';
 
-interface CommandRequestPayload {
+interface GateCommandRequestPayload {
 	gateId: string;
 	command: 'open' | 'close';
 	sessionId?: string;
@@ -21,6 +24,10 @@ interface SimulatorCheckpointPayload {
 }
 
 type JoinedRoom = 'operator' | 'simulator';
+type GateCommandSource = Exclude<GateCommand['requestedBy'], 'backend'>;
+
+const SUPPORTED_GATE_IDS = ['entry-gate', 'exit-gate'] as const;
+const SUPPORTED_GATE_COMMANDS = ['open', 'close'] as const;
 
 let ioServer: Server | null = null;
 let unsubscribeRealtimeBridge: (() => void) | null = null;
@@ -61,6 +68,147 @@ const validateSimulatorKey = (key?: string) => {
 	return key === expected;
 };
 
+const isSupportedGateId = (gateId: string): gateId is (typeof SUPPORTED_GATE_IDS)[number] => {
+	return SUPPORTED_GATE_IDS.includes(gateId as (typeof SUPPORTED_GATE_IDS)[number]);
+};
+
+const isSupportedGateCommand = (
+	command: string
+): command is (typeof SUPPORTED_GATE_COMMANDS)[number] => {
+	return SUPPORTED_GATE_COMMANDS.includes(command as (typeof SUPPORTED_GATE_COMMANDS)[number]);
+};
+
+const buildGateCommand = (
+	source: GateCommandSource,
+	payload: GateCommandRequestPayload
+): GateCommand => ({
+	commandId: randomUUID(),
+	sessionId: payload.sessionId,
+	correlationId: payload.correlationId,
+	requestedBy: source,
+	timeoutMs: 5000,
+	action: payload.command
+});
+
+const publishGateCommandEvents = (
+	source: GateCommandSource,
+	payload: GateCommandRequestPayload,
+	gateLog: GateCommandLog
+) => {
+	publishRealtimeEvent({
+		eventName: 'gate.command.sent',
+		source,
+		correlationId: payload.correlationId,
+		sessionId: payload.sessionId,
+		payload: {
+			gateId: payload.gateId,
+			command: payload.command,
+			result: gateLog.result,
+			state: gateLog.stateAfter,
+			commandId: gateLog.commandId,
+			reason: source === 'operator' ? 'operator_manual_command' : 'simulator_manual_override'
+		}
+	});
+
+	publishRealtimeEvent({
+		eventName: 'gate.state.changed',
+		source: 'hardware-gateway',
+		correlationId: payload.correlationId,
+		sessionId: payload.sessionId,
+		payload: {
+			gateId: payload.gateId,
+			state: gateLog.stateAfter
+		}
+	});
+};
+
+const executeGateCommand = async ({
+	socket,
+	payload,
+	source,
+	actorName,
+	ack
+}: {
+	socket: Socket;
+	payload: GateCommandRequestPayload;
+	source: GateCommandSource;
+	actorName: string;
+	ack?: (value: unknown) => void;
+}) => {
+	if (!payload?.gateId || !payload?.command) {
+		ack?.({ success: false, message: 'gateId and command are required' });
+		return;
+	}
+
+	if (!isSupportedGateId(payload.gateId)) {
+		ack?.({ success: false, message: 'Unsupported gateId' });
+		return;
+	}
+
+	if (!isSupportedGateCommand(payload.command)) {
+		ack?.({ success: false, message: 'Unsupported command' });
+		return;
+	}
+
+	const correlationId = payload.correlationId ?? randomUUID();
+	logger.info('Gate command received', {
+		socketId: socket.id,
+		actorName,
+		source,
+		gateId: payload.gateId,
+		command: payload.command,
+		sessionId: payload.sessionId,
+		correlationId
+	});
+
+	const gateCommand = buildGateCommand(source, {
+		...payload,
+		correlationId
+	});
+
+	try {
+		const gateLog =
+			payload.command === 'open'
+				? await hardwareGatewayMock.openGate(payload.gateId, gateCommand)
+				: await hardwareGatewayMock.closeGate(payload.gateId, gateCommand);
+
+		publishGateCommandEvents(source, { ...payload, correlationId }, gateLog);
+
+		logger.info('Gate command completed', {
+			socketId: socket.id,
+			actorName,
+			source,
+			gateId: payload.gateId,
+			command: payload.command,
+			result: gateLog.result,
+			state: gateLog.stateAfter,
+			correlationId
+		});
+
+		ack?.({
+			success: true,
+			correlationId,
+			result: gateLog.result,
+			state: gateLog.stateAfter
+		});
+	} catch (error) {
+		logger.error('Gate command failed', {
+			socketId: socket.id,
+			actorName,
+			source,
+			gateId: payload.gateId,
+			command: payload.command,
+			correlationId,
+			error
+		});
+
+		ack?.({
+			success: false,
+			message: error instanceof Error ? error.message : 'Gate command failed'
+		});
+	}
+};
+
 const bridgeRealtimeEventToRooms = () => {
 	if (!ioServer) {
 		return;
@@ -92,6 +240,11 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 		}
 	});
 
+	logger.info('Socket.IO server initialized', {
+		path: '/socket.io',
+		corsOrigin
+	});
+
 	ioServer.use(async (socket, next) => {
 		const token = getSocketToken(socket);
 		if (!token) {
@@ -102,6 +255,10 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 			const decoded = verifyToken(token) as JwtPayload;
 			const user = await findUserById(decoded.userId);
 			if (!user || !user.is_active) {
+				logger.warn('Socket authentication rejected', {
+					socketId: socket.id,
+					reason: 'Unauthorized socket user'
+				});
 				return next(new Error('Unauthorized socket user'));
 			}
 
@@ -112,23 +269,53 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 			};
 			return next();
 		} catch {
+			logger.warn('Socket authentication rejected', {
+				socketId: socket.id,
+				reason: 'Invalid socket token'
+			});
 			return next(new Error('Invalid socket token'));
 		}
 	});
 
 	ioServer.on('connection', (socket) => {
+		logger.info('Socket connected', {
+			socketId: socket.id,
+			authenticated: Boolean(socket.data.user)
+		});
+
+		socket.on('disconnect', (reason) => {
+			logger.info('Socket disconnected', {
+				socketId: socket.id,
+				reason
+			});
+		});
+
 		socket.on('operator.join', (_payload, ack?: (value: unknown) => void) => {
 			if (!socket.data.user) {
+				logger.warn('Operator room join rejected', {
+					socketId: socket.id,
+					reason: 'Authentication required'
+				});
 				ack?.({ success: false, message: 'Authentication required' });
 				return;
 			}
 
 			if (!['admin', 'operator'].includes(socket.data.user.role)) {
+				logger.warn('Operator room join rejected', {
+					socketId: socket.id,
+					username: socket.data.user.username,
+					reason: 'Forbidden role'
+				});
 				ack?.({ success: false, message: 'Forbidden role' });
 				return;
 			}
 
 			socket.join('operator');
+			logger.debug('Operator room joined', {
+				socketId: socket.id,
+				username: socket.data.user.username,
+				role: socket.data.user.role
+			});
 			ack?.({ success: true, room: 'operator' as JoinedRoom });
 		});
 
@@ -136,42 +323,64 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 			'simulator.join',
 			(payload: { apiKey?: string } | undefined, ack?: (value: unknown) => void) => {
 				if (!validateSimulatorKey(payload?.apiKey)) {
+					logger.warn('Simulator room join rejected', {
+						socketId: socket.id,
+						reason: 'Invalid simulator key'
+					});
 					ack?.({ success: false, message: 'Invalid simulator key' });
 					return;
 				}
 
 				socket.join('simulator');
+				logger.debug('Simulator room joined', {
+					socketId: socket.id,
+					apiKeyProvided: Boolean(payload?.apiKey)
+				});
 				ack?.({ success: true, room: 'simulator' as JoinedRoom });
 			}
 		);
 
 		socket.on(
 			'operator.gate.command.request',
-			(payload: CommandRequestPayload, ack?: (value: unknown) => void) => {
+			async (payload: GateCommandRequestPayload, ack?: (value: unknown) => void) => {
 				if (!socket.data.user || !['admin', 'operator'].includes(socket.data.user.role)) {
+					logger.warn('Manual gate command rejected', {
+						socketId: socket.id,
+						reason: 'Forbidden'
+					});
 					ack?.({ success: false, message: 'Forbidden' });
 					return;
 				}
 
-				if (!payload?.gateId || !payload?.command) {
-					ack?.({ success: false, message: 'gateId and command are required' });
+				void executeGateCommand({
+					socket,
+					payload,
+					source: 'operator',
+					actorName: socket.data.user.username,
+					ack
+				});
+			}
+		);
+
+		socket.on(
+			'simulator.gate.command.request',
+			async (payload: GateCommandRequestPayload, ack?: (value: unknown) => void) => {
+				if (!socket.rooms.has('simulator')) {
+					logger.warn('Simulator gate command rejected', {
+						socketId: socket.id,
+						reason: 'Simulator room is required'
+					});
+					ack?.({ success: false, message: 'Simulator room is required' });
 					return;
 				}
 
-				const correlationId = payload.correlationId ?? randomUUID();
-				publishRealtimeEvent({
-					eventName: 'gate.command.sent',
-					source: 'operator',
-					correlationId,
-					sessionId: payload.sessionId,
-					payload: {
-						gateId: payload.gateId,
-						command: payload.command,
-						reason: 'operator_manual_command'
-					}
+				void executeGateCommand({
+					socket,
+					payload,
+					source: 'simulator',
+					actorName: 'simulator-3d',
+					ack
 				});
-
-				ack?.({ success: true, correlationId });
 			}
 		);
 
@@ -179,22 +388,43 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 			'simulator.vehicle.checkpoint',
 			(payload: SimulatorCheckpointPayload, ack?: (value: unknown) => void) => {
 				if (!socket.rooms.has('simulator')) {
+					logger.warn('Simulator checkpoint rejected', {
+						socketId: socket.id,
+						reason: 'Simulator room is required'
+					});
 					ack?.({ success: false, message: 'Simulator room is required' });
 					return;
 				}
 
 				if (!payload?.plateNumber || !payload?.checkpoint) {
+					logger.warn('Simulator checkpoint rejected', {
+						socketId: socket.id,
+						reason: 'plateNumber and checkpoint are required'
+					});
 					ack?.({ success: false, message: 'plateNumber and checkpoint are required' });
 					return;
 				}
 
 				const normalizedCheckpoint = payload.checkpoint;
 				if (!['entry_rfid', 'exit_rfid'].includes(normalizedCheckpoint)) {
+					logger.warn('Simulator checkpoint rejected', {
+						socketId: socket.id,
+						reason: 'Invalid checkpoint value'
+					});
 					ack?.({ success: false, message: 'Invalid checkpoint value' });
 					return;
 				}
 
 				const correlationId = payload.correlationId ?? randomUUID();
+				logger.info('Simulator checkpoint received', {
+					socketId: socket.id,
+					checkpoint: normalizedCheckpoint,
+					plateNumber: payload.plateNumber.trim().toUpperCase(),
+					state: payload.state ?? 'arrived',
+					sessionId: payload.sessionId,
+					correlationId
+				});
+
 				publishRealtimeEvent({
 					eventName: 'vehicle.state.changed',
 					source: 'simulator',
@@ -227,7 +457,9 @@ export const shutdownSocketServer = async () => {
 	}
 
 	if (ioServer) {
-		await ioServer.close();
+		await new Promise<void>((resolve) => {
+			ioServer?.close(() => resolve());
+		});
 		ioServer = null;
 	}
 };

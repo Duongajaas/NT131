@@ -32,6 +32,36 @@ export interface SessionSummary {
 	duration_minutes?: number;
 }
 
+export interface VehicleRecord {
+	_id: string;
+	resident_id?: string;
+	vehicle_type: 'motorbike' | 'car';
+	plate_number: string;
+	created_at: string;
+}
+
+export interface RfidCardRecord {
+	_id: string;
+	uid: string;
+	vehicle_id: string;
+	card_type: 'monthly' | 'guest';
+	is_active: boolean;
+	monthly_fee?: number;
+	monthly_started_at?: string;
+	monthly_expires_at?: string;
+	issued_at: string;
+}
+
+export interface ParkingSlotRecord {
+	_id: string;
+	slot_code: string;
+	level: number;
+	slot_type: 'regular' | 'motorbike' | 'handicap';
+	is_occupied: boolean;
+	current_session_id?: string;
+	created_at: string;
+}
+
 export interface OverviewData {
 	total_slots: number;
 	occupied_slots: number;

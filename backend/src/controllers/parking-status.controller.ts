@@ -52,3 +52,27 @@ export const gateCommands = async (req: Request, res: Response) => {
 		data
 	});
 };
+
+export const revenueReport = async (req: Request, res: Response) => {
+	const { from_date, to_date, limit } = req.query;
+
+	const parsedFromDate =
+		typeof from_date === 'string' && !Number.isNaN(Date.parse(from_date))
+			? new Date(from_date)
+			: undefined;
+	const parsedToDate =
+		typeof to_date === 'string' && !Number.isNaN(Date.parse(to_date))
+			? new Date(to_date)
+			: undefined;
+
+	const data = await parkingStatusService.getRevenueReport({
+		from_date: parsedFromDate,
+		to_date: parsedToDate,
+		limit: typeof limit === 'string' ? Number(limit) : undefined
+	});
+
+	return res.status(200).json({
+		message: 'Revenue report retrieved successfully',
+		data
+	});
+};

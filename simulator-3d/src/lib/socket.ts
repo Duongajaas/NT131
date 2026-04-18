@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import type { RealtimeEnvelope } from '../types/contracts';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.trim() || 'http://localhost:3000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.trim() || 'http://localhost:5000';
 
 let socket: Socket | null = null;
 

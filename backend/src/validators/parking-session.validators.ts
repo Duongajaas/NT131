@@ -1,34 +1,5 @@
-import type { NextFunction, Request, Response } from 'express';
 import Joi, { type ObjectSchema } from 'joi';
-
-const formatValidationErrors = (error: Joi.ValidationError) => {
-	return error.details.map((detail) => ({
-		field: detail.path.join('.'),
-		message: detail.message
-	}));
-};
-
-const validateRequestPart = (
-	part: 'body' | 'params' | 'query',
-	schema: ObjectSchema
-) => {
-	return (req: Request, res: Response, next: NextFunction) => {
-		const { error, value } = schema.validate(req[part], {
-			abortEarly: false,
-			stripUnknown: true
-		});
-
-		if (error) {
-			return res.status(400).json({
-				message: 'Validation failed',
-				errors: formatValidationErrors(error)
-			});
-		}
-
-		req[part] = value;
-		next();
-	};
-};
+import validateRequestPart from './request-part.validator.ts';
 
 const mongoObjectIdPattern = /^[0-9a-fA-F]{24}$/;
 

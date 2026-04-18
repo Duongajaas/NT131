@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { pathToFileURL } from 'url';
 import checkConnection from '../config/database.ts';
 import { createUser, findUserByUsername } from '../repositories/user.repository.ts';
+import logger from '../utills/logger.ts';
 import { hashPassword } from '../utills/password.ts';
 
 dotenv.config();
@@ -84,12 +85,17 @@ const run = async () => {
 		});
 
 		if (result.created) {
-			console.log('✅ Admin account created successfully');
+			logger.info('Admin account created successfully', {
+				username: result.user.username,
+				role: result.user.role
+			});
 		} else {
-			console.log('ℹ️ Admin account already exists');
+			logger.info('Admin account already exists', {
+				username: result.user.username
+			});
 		}
 
-		console.log(result.user);
+		logger.debug('Admin account summary', { user: result.user });
 	} finally {
 		await mongoose.disconnect();
 	}
@@ -99,7 +105,7 @@ const isDirectExecution = import.meta.url === pathToFileURL(process.argv[1] ?? '
 
 if (isDirectExecution) {
 	run().catch((error) => {
-		console.error('❌ Failed to create admin account:', error);
+		logger.error('Failed to create admin account', { error });
 		process.exitCode = 1;
 	});
 }

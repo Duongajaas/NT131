@@ -27,3 +27,14 @@ export const login = async (req: Request, res: Response) => {
 		data
 	});
 };
+
+export const refreshToken = async (req: Request, res: Response) => {
+	const { refreshToken } = req.body;
+
+	const data = await authService.refreshToken({ refreshToken });
+
+	return res.status(200).json({
+		message: 'Token refreshed successfully',
+		data
+	});
+};

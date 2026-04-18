@@ -3,6 +3,7 @@
 Standalone 3D simulator app for NT131 Smart Parking.
 
 This app is separated from the main operator/admin frontend. It simulates vehicle movement and sends checkpoint events to backend via Socket.IO.
+When configured with a backend simulator API key, it also creates real vehicle, RFID, session, and parking-slot records through REST.
 
 ## What this app does
 
@@ -10,22 +11,24 @@ This app is separated from the main operator/admin frontend. It simulates vehicl
 - Simulates vehicle entry and exit states.
 - Emits simulator checkpoint events:
   - `simulator.vehicle.checkpoint` with `entry_rfid` and `exit_rfid`.
-- Works with backend canonical realtime flow so operator UI can receive `vehicle.state.changed`.
+- Works with backend canonical realtime flow so operator UI can receive `vehicle.state.changed` and gate state updates.
 
 ## Requirements
 
 - Node.js 22+
-- Backend running (default: `http://localhost:3000`)
+- Backend running (default: `http://localhost:5000`)
 
 ## Environment variables
 
 Create `.env` in this folder (optional, defaults are provided):
 
 ```env
-VITE_API_BASE_URL=http://localhost:3000/api/v1
-VITE_SOCKET_URL=http://localhost:3000
+VITE_API_BASE_URL=http://localhost:5000/api/v1
+VITE_SOCKET_URL=http://localhost:5000
 VITE_SIMULATOR_API_KEY=
 ```
+
+`VITE_SIMULATOR_API_KEY` must match `SIMULATOR_API_KEY` on the backend. This is a service credential for the simulator, not a user login token.
 
 ## Install
 

@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import type { RealtimeEnvelope } from '../types/contracts';
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.trim() || 'http://localhost:3000';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.trim() || 'http://localhost:5000';
 
 let socket: Socket | null = null;
 
@@ -55,6 +55,43 @@ export const joinSimulatorRoom = (socketRef: Socket, apiKey?: string) => {
 				}
 
 				reject(new Error(ack.message || 'Failed to join simulator room'));
+			}
+		);
+	});
+};
+
+export interface ManualGateCommandPayload {
+	gateId: 'entry-gate' | 'exit-gate';
+	command: 'open' | 'close';
+	sessionId?: string;
+	correlationId?: string;
+}
+
+export const requestManualGateCommand = (
+	socketRef: Socket,
+	payload: ManualGateCommandPayload
+) => {
+	return new Promise<{ correlationId?: string; result?: string; state?: string }>((resolve, reject) => {
+		socketRef.emit(
+			'operator.gate.command.request',
+			payload,
+			(ack: {
+				success: boolean;
+				message?: string;
+				correlationId?: string;
+				result?: string;
+				state?: string;
+			}) => {
+				if (ack.success) {
+					resolve({
+						correlationId: ack.correlationId,
+						result: ack.result,
+						state: ack.state
+					});
+					return;
+				}
+
+				reject(new Error(ack.message || 'Failed to request manual gate command'));
 			}
 		);
 	});

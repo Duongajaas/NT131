@@ -1,11 +1,12 @@
 import type { IUser, UserRole } from '../models/user.models.ts';
-import { createUser, findUserByUsername } from '../repositories/user.repository.ts';
+import { createUser, findUserById, findUserByUsername } from '../repositories/user.repository.ts';
 import AppError from '../utills/app-error.ts';
 import {
 	comparePassword,
 	generateRefreshToken,
 	generateToken,
-	hashPassword
+	hashPassword,
+	verifyRefreshToken
 } from '../utills/password.ts';
 
 interface RegisterInput {
@@ -20,15 +21,19 @@ interface LoginInput {
 	password: string;
 }
 
+interface RefreshTokenInput {
+	refreshToken: string;
+}
+
 // Xây dựng phản hồi sau khi đăng nhập hoặc đăng ký thành công
 const buildAuthResponse = (user: IUser) => {
 	const payload = {
 		userId: user._id.toString(),
-		email: user.username,
+		username: user.username,
 		role: user.role
 	};
 
-	const accessToken = generateToken(payload);
+	const token = generateToken(payload);
 	const refreshToken = generateRefreshToken(payload);
 
 	return {
@@ -39,7 +44,7 @@ const buildAuthResponse = (user: IUser) => {
 			role: user.role,
 			is_active: user.is_active
 		},
-		accessToken,
+		token,
 		refreshToken
 	};
 };
@@ -66,6 +71,7 @@ export const register = async (input: RegisterInput) => {
 // Hàm đăng nhập người dùng
 export const login = async (input: LoginInput) => {
 	const user = await findUserByUsername(input.username);
+
 	if (!user) {
 		throw new AppError('Invalid username or password', 401);
 	}
@@ -75,8 +81,33 @@ export const login = async (input: LoginInput) => {
 	}
 
 	const isPasswordValid = await comparePassword(input.password, user.password);
+
 	if (!isPasswordValid) {
 		throw new AppError('Invalid username or password', 401);
+	}
+
+	return buildAuthResponse(user);
+};
+
+export const refreshToken = async (input: RefreshTokenInput) => {
+	let decoded: { userId?: string };
+	try {
+		decoded = verifyRefreshToken(input.refreshToken) as { userId?: string };
+	} catch {
+		throw new AppError('Invalid refresh token', 401);
+	}
+
+	if (!decoded.userId) {
+		throw new AppError('Invalid refresh token', 401);
+	}
+
+	const user = await findUserById(decoded.userId);
+	if (!user) {
+		throw new AppError('User not found', 404);
+	}
+
+	if (!user.is_active) {
+		throw new AppError('User is inactive', 403);
 	}
 
 	return buildAuthResponse(user);

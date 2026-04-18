@@ -38,4 +38,11 @@ parkingStatusRouter.get(
 	asyncHandler(parkingStatusController.gateCommands)
 );
 
+parkingStatusRouter.get(
+	'/revenue-report',
+	authenticateToken,
+	authorizeAdminOrOperator,
+	asyncHandler(parkingStatusController.revenueReport)
+);
+
 export default parkingStatusRouter;

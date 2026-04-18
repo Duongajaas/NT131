@@ -1,77 +1,84 @@
-import { useEffect, useState } from 'react';
-import { OperatorDashboard } from './components/operator-dashboard';
-import { decodeRoleFromToken, type FrontendRole } from './lib/auth';
-import { useOperatorRealtime } from './hooks/use-operator-realtime';
+import { type ReactElement, useEffect } from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import { LoginPage } from './pages/login-page';
+import { AdminPage } from './pages/admin-page';
+import { OperatorPage } from './pages/operator-page';
+import { useAuthStore } from './store/auth-store';
 import './App.css';
 
+type AppRole = 'admin' | 'operator';
+
+const SessionSplash = () => <div className="app-splash">Đang khởi tạo phiên đăng nhập...</div>;
+
+interface ProtectedRouteProps {
+	allowRoles: AppRole[];
+	children: ReactElement;
+}
+
+const ProtectedRoute = ({ allowRoles, children }: ProtectedRouteProps) => {
+	const hydrated = useAuthStore((state) => state.isHydrated);
+	const token = useAuthStore((state) => state.token);
+	const role = useAuthStore((state) => state.role);
+
+	if (!hydrated) {
+		return <SessionSplash />;
+	}
+
+	if (!token || !role) {
+		return <Navigate to="/login" replace />;
+	}
+
+	if (!allowRoles.includes(role as AppRole)) {
+		return <Navigate to={role === 'admin' ? '/admin' : '/operator'} replace />;
+	}
+
+	return children;
+};
+
+const DefaultRedirect = () => {
+	const hydrated = useAuthStore((state) => state.isHydrated);
+	const token = useAuthStore((state) => state.token);
+	const role = useAuthStore((state) => state.role);
+
+	if (!hydrated) {
+		return <SessionSplash />;
+	}
+
+	if (!token || !role) {
+		return <Navigate to="/login" replace />;
+	}
+
+	return <Navigate to={role === 'admin' ? '/admin' : '/operator'} replace />;
+};
+
 function App() {
-	const [token, setToken] = useState('');
-	const [activeRoleView, setActiveRoleView] = useState<FrontendRole>('operator');
-	const [tokenRole, setTokenRole] = useState<FrontendRole | undefined>(undefined);
-
-	useOperatorRealtime(token);
+	const hydrate = useAuthStore((state) => state.hydrate);
 
 	useEffect(() => {
-		const savedToken = window.localStorage.getItem('nt131.parking.token');
-		if (savedToken) {
-			setToken(savedToken);
-		}
-	}, []);
-
-	useEffect(() => {
-		if (token) {
-			window.localStorage.setItem('nt131.parking.token', token);
-			const decodedRole = decodeRoleFromToken(token);
-			setTokenRole(decodedRole);
-			if (decodedRole) {
-				setActiveRoleView(decodedRole);
-			}
-			return;
-		}
-
-		setTokenRole(undefined);
-		setActiveRoleView('operator');
-		window.localStorage.removeItem('nt131.parking.token');
-	}, [token]);
-
-	const canSwitchRoleView = tokenRole === 'admin';
+		hydrate();
+	}, [hydrate]);
 
 	return (
-		<div className="shell-frame">
-			<header className="topbar panel">
-				<div>
-					<p className="eyebrow">NT131 Smart Parking</p>
-					<h1>Operator/Admin Console</h1>
-					<p className="hero-sub">
-						Single-page management workspace separated by role view.
-					</p>
-				</div>
-				<div className="nav-tabs" aria-label="Role view">
-					<button
-						type="button"
-						className={`nav-tab ${activeRoleView === 'operator' ? 'tab-active' : ''}`}
-						onClick={() => setActiveRoleView('operator')}
-					>
-						Operator View
-					</button>
-					<button
-						type="button"
-						className={`nav-tab ${activeRoleView === 'admin' ? 'tab-active' : ''}`}
-						onClick={() => setActiveRoleView('admin')}
-						disabled={!canSwitchRoleView}
-						title={canSwitchRoleView ? 'Switch to admin view' : 'Admin JWT is required'}
-					>
-						Admin View
-					</button>
-				</div>
-			</header>
-
-			<OperatorDashboard
-				token={token}
-				onTokenChange={setToken}
-				roleView={activeRoleView}
+		<Routes>
+			<Route path="/login" element={<LoginPage />} />
+			<Route
+				path="/operator"
+				element={
+					<ProtectedRoute allowRoles={['operator']}>
+						<OperatorPage />
+					</ProtectedRoute>
+				}
 			/>
-		</div>
+			<Route
+				path="/admin"
+				element={
+					<ProtectedRoute allowRoles={['admin']}>
+						<AdminPage />
+					</ProtectedRoute>
+				}
+			/>
+			<Route path="*" element={<DefaultRedirect />} />
+		</Routes>
 	);
 }
 

@@ -7,6 +7,7 @@ type SimulatorStage =
 	| 'idle'
 	| 'approaching_entry'
 	| 'waiting_rfid'
+	| 'barrier_pass'
 	| 'entry_processing'
 	| 'assigned_slot'
 	| 'parked'
@@ -33,11 +34,19 @@ const SLOT_LENGTH = 3.4;
 const CAR_BODY_HEIGHT = 1.2;
 const ENTRY_LANE_Z = -3;
 const EXIT_LANE_Z = 3;
-const ENTRY_RFID_POINT: PathPoint = [-0.7, CAR_DRIVE_Y, ENTRY_LANE_Z];
-const EXIT_RFID_POINT: PathPoint = [-0.7, CAR_DRIVE_Y, EXIT_LANE_Z];
-const ENTRY_BARRIER_X = -3.4;
-const EXIT_BARRIER_X = 3.4;
-const BARRIER_PASS_PADDING = 0.2;
+const ENTRY_RFID_POINT: PathPoint = [1.5, CAR_DRIVE_Y, ENTRY_LANE_Z];
+const EXIT_RFID_POINT: PathPoint = [-1.5, CAR_DRIVE_Y, EXIT_LANE_Z];
+const ENTRY_BARRIER_X = -5;
+const EXIT_BARRIER_X = 5;
+const CAR_BODY_LENGTH = SLOT_LENGTH;
+const BARRIER_PASS_Y_TOLERANCE = 0.3;
+const BARRIER_PASS_Z_TOLERANCE = 0.2;
+const ENTRY_BARRIER_POSITION: PathPoint = [ENTRY_BARRIER_X, 0.35, ENTRY_LANE_Z];
+const EXIT_BARRIER_POSITION: PathPoint = [EXIT_BARRIER_X, 0.35, EXIT_LANE_Z];
+const barrierPass = {
+	entry: ENTRY_BARRIER_POSITION,
+	exit: EXIT_BARRIER_POSITION
+} as const;
 
 const isSupportedDemoSlotId = (slotId: number): slotId is 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 =>
 	slotId >= 1 && slotId <= 8;
@@ -73,7 +82,7 @@ const generatePath = (slotId: number): GeneratedPath => {
 
 	const fromSlot: PathPoint[] =
 		laneZ === 16
-			? [laneSlotPoint, laneTurnPoint, [-20, CAR_DRIVE_Y, 22]]
+			? [laneSlotPoint, laneTurnPoint, [-20, CAR_DRIVE_Y, laneZ]]
 			: [laneSlotPoint, laneTurnPoint];
 
 	return {
@@ -121,9 +130,9 @@ const createCarWaypoints = (slotId: number): Record<SimulatorStage, PathPoint[]>
 		idle: idlePreviewPath,
 		approaching_entry: [
 			[22, CAR_DRIVE_Y, ENTRY_LANE_Z],
-			[0, CAR_DRIVE_Y, ENTRY_LANE_Z],
 			ENTRY_RFID_POINT
 		],
+		barrier_pass: [ENTRY_BARRIER_POSITION],
 		waiting_rfid: [ENTRY_RFID_POINT],
 		entry_processing: slotPath.entryProcessing,
 		assigned_slot: slotPath.toSlot,
@@ -220,44 +229,85 @@ const MAIN_FLOW_GUIDES: PathPoint[][] = [
 	]
 ];
 
-const stageTone: Record<SimulatorStage, string> = {
-	idle: '#64748b',
-	approaching_entry: '#f59e0b',
-	waiting_rfid: '#eab308',
-	entry_processing: '#0ea5e9',
-	assigned_slot: '#22c55e',
-	parked: '#16a34a',
-	approaching_exit: '#f97316',
-	exit_processing: '#8b5cf6',
-	completed: '#0f766e'
+const stageBackgroundTone: Record<SimulatorStage, string> = {
+	idle: '#0d1728',
+	approaching_entry: '#23170b',
+	waiting_rfid: '#2b240c',
+	barrier_pass: '#2b240c',
+	entry_processing: '#062238',
+	assigned_slot: '#08281a',
+	parked: '#071f17',
+	approaching_exit: '#2a1408',
+	exit_processing: '#1a1233',
+	completed: '#082420'
 };
+
+const stageAccentTone: Record<SimulatorStage, { entry: string; exit: string; rim: string }> = {
+	idle: { entry: '#22d3ee', exit: '#60a5fa', rim: '#a78bfa' },
+	approaching_entry: { entry: '#f59e0b', exit: '#60a5fa', rim: '#f97316' },
+	waiting_rfid: { entry: '#eab308', exit: '#60a5fa', rim: '#facc15' },
+	barrier_pass: { entry: '#eab308', exit: '#60a5fa', rim: '#facc15' },
+	entry_processing: { entry: '#38bdf8', exit: '#818cf8', rim: '#22d3ee' },
+	assigned_slot: { entry: '#22c55e', exit: '#14b8a6', rim: '#4ade80' },
+	parked: { entry: '#4ade80', exit: '#2dd4bf', rim: '#22c55e' },
+	approaching_exit: { entry: '#fb923c', exit: '#f97316', rim: '#f59e0b' },
+	exit_processing: { entry: '#818cf8', exit: '#c084fc', rim: '#a78bfa' },
+	completed: { entry: '#2dd4bf', exit: '#34d399', rim: '#22d3ee' }
+};
+
+const RENDER_EXPOSURE = 0.9;
+const ROAD_BASE_COLOR = '#1e293b';
+const ROAD_SURFACE_COLOR = '#64748b';
+const ROAD_SIDE_COLOR = '#475569';
+const ROAD_EMISSIVE_COLOR = '#334155';
+const ROAD_EMISSIVE_INTENSITY = 0.18;
 
 function Road() {
 	return (
 		<>
 			<mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow position={[0, 0, 0]}>
 				<planeGeometry args={[80, 80]} />
-				<meshStandardMaterial color="#0f172a" />
+				<meshStandardMaterial color={ROAD_BASE_COLOR} />
 			</mesh>
 			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
 				<planeGeometry args={[35.2, 2.6]} />
-				<meshStandardMaterial color="#1f2937" />
+				<meshStandardMaterial
+					color={ROAD_SURFACE_COLOR}
+					emissive={ROAD_EMISSIVE_COLOR}
+					emissiveIntensity={ROAD_EMISSIVE_INTENSITY}
+				/>
 			</mesh>
 			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[-3.4, 0.02, 0]}>
 				<planeGeometry args={[1.2, 11.8]} />
-				<meshStandardMaterial color="#111827" />
+				<meshStandardMaterial
+					color={ROAD_SIDE_COLOR}
+					emissive={ROAD_EMISSIVE_COLOR}
+					emissiveIntensity={ROAD_EMISSIVE_INTENSITY * 0.75}
+				/>
 			</mesh>
 			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[3.4, 0.02, 0]}>
 				<planeGeometry args={[1.2, 11.8]} />
-				<meshStandardMaterial color="#111827" />
+				<meshStandardMaterial
+					color={ROAD_SIDE_COLOR}
+					emissive={ROAD_EMISSIVE_COLOR}
+					emissiveIntensity={ROAD_EMISSIVE_INTENSITY * 0.75}
+				/>
 			</mesh>
 			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, -4.1]}>
 				<planeGeometry args={[11, 0.65]} />
-				<meshStandardMaterial color="#1f2937" />
+				<meshStandardMaterial
+					color={ROAD_SURFACE_COLOR}
+					emissive={ROAD_EMISSIVE_COLOR}
+					emissiveIntensity={ROAD_EMISSIVE_INTENSITY}
+				/>
 			</mesh>
 			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 4.1]}>
 				<planeGeometry args={[11, 0.65]} />
-				<meshStandardMaterial color="#1f2937" />
+				<meshStandardMaterial
+					color={ROAD_SURFACE_COLOR}
+					emissive={ROAD_EMISSIVE_COLOR}
+					emissiveIntensity={ROAD_EMISSIVE_INTENSITY}
+				/>
 			</mesh>
 		</>
 	);
@@ -276,11 +326,6 @@ function Gate({
 }) {
 	const armLength = 3;
 	const armDirection = gateType === 'entry' ? 1 : -1;
-	const animatedArmRotationX = useRef(0);
-
-	useFrame((_, delta) => {
-		animatedArmRotationX.current = THREE.MathUtils.damp(animatedArmRotationX.current, armRotationX, 9, delta);
-	});
 
 	return (
 		<group position={position}>
@@ -288,7 +333,7 @@ function Gate({
 				<boxGeometry args={[0.32, 2.5, 0.32]} />
 				<meshStandardMaterial color="#cbd5e1" />
 			</mesh>
-			<group position={[0.15, 1.8, 0]} rotation={[animatedArmRotationX.current, 0, 0]}>
+			<group position={[0.15, 1.8, 0]} rotation={[armRotationX, 0, 0]}>
 				<mesh position={[0, 0, (armLength / 2) * armDirection]} castShadow>
 					<boxGeometry args={[0.12, 0.12, armLength]} />
 					<meshStandardMaterial color="#f8fafc" />
@@ -308,11 +353,11 @@ function Gate({
 function BarrierLine() {
 	return (
 		<>
-			<mesh position={[3.4, 0.04, 2.8]}>
+			<mesh position={barrierPass.entry}>
 				<boxGeometry args={[0.24, 0.08, 3.2]} />
 				<meshStandardMaterial color="#fbbf24" />
 			</mesh>
-			<mesh position={[-3.4, 0.04, ENTRY_LANE_Z]}>
+			<mesh position={barrierPass.exit}>
 				<boxGeometry args={[0.24, 0.08, 3.2]} />
 				<meshStandardMaterial color="#22c55e" />
 			</mesh>
@@ -362,7 +407,7 @@ function FlowGuideLines() {
 					return (
 						<mesh key={`main-flow-${pathIndex}-${index}`} position={[centerX, 0.055, centerZ]} rotation={[0, rotationY, 0]}>
 							<boxGeometry args={[0.22, 0.02, segmentLength]} />
-							<meshStandardMaterial color="#ffffff" emissive="#f8fafc" emissiveIntensity={0.15} />
+							<meshStandardMaterial color="#ffffff" emissive="#f8fafc" emissiveIntensity={0.06} />
 						</mesh>
 					);
 				})
@@ -427,7 +472,7 @@ function Car({
 	onPositionChange?: (position: THREE.Vector3) => void;
 }) {
 	const carRef = useRef<THREE.Group>(null);
-	const plateTone = useMemo(() => stageTone.idle, []);
+	const plateTone = useMemo(() => '#64748b', []);
 	const progressRef = useRef(0);
 	const headingOffset = Math.PI / 2;
 	const progressPerSecond = 0.12;
@@ -521,9 +566,6 @@ function ParkingScene3D({
 	onEntryBarrierPassed,
 	onExitBarrierPassed
 }: ParkingScene3DProps) {
-	void plateNumber;
-	void entryGateOpen;
-	void exitGateOpen;
 	const parsedPreferredSlotId = Number.parseInt(preferredSlotId, 10);
 	const targetSlotId = isSupportedDemoSlotId(parsedPreferredSlotId) ? parsedPreferredSlotId : 8;
 	const carWaypointsByStage = useMemo(() => createCarWaypoints(targetSlotId), [targetSlotId]);
@@ -533,8 +575,10 @@ function ParkingScene3D({
 	const carWaypoints = carWaypointsByStage[stage] ?? carWaypointsByStage.approaching_entry;
 	const hasReportedEntryBarrierPassRef = useRef(false);
 	const hasReportedExitBarrierPassRef = useRef(false);
+	const previousCarPositionRef = useRef<THREE.Vector3 | null>(null);
 
-	const stageColor = stageTone[stage];
+	const stageColor = stageBackgroundTone[stage];
+	const stageAccent = stageAccentTone[stage];
 	const occupiedSlotIds = useMemo(() => {
 		if (stage === 'parked' || stage === 'approaching_exit' || stage === 'exit_processing') {
 			return new Set<number>([targetSlotId]);
@@ -548,30 +592,66 @@ function ParkingScene3D({
 	const exitArmRotationX = exitGateOpen ? gateOpenAngle : 0;
 
 	useEffect(() => {
-		hasReportedEntryBarrierPassRef.current = false;
-		hasReportedExitBarrierPassRef.current = false;
-	}, [stage]);
+		if (!entryGateOpen) {
+			hasReportedEntryBarrierPassRef.current = false;
+		}
+	}, [entryGateOpen]);
+
+	useEffect(() => {
+		if (!exitGateOpen) {
+			hasReportedExitBarrierPassRef.current = false;
+		}
+	}, [exitGateOpen]);
+
+	useEffect(() => {
+		previousCarPositionRef.current = null;
+	}, [carWaypoints]);
+
+	
 
 	const handleCarPositionChange = (position: THREE.Vector3) => {
-		if (
-			stage === 'entry_processing' &&
-			entryGateOpen &&
-			!hasReportedEntryBarrierPassRef.current &&
-			position.x <= ENTRY_BARRIER_X - BARRIER_PASS_PADDING
-		) {
-			hasReportedEntryBarrierPassRef.current = true;
-			onEntryBarrierPassed?.();
+		const previousPosition = previousCarPositionRef.current;
+		const currentPosition = position.clone();
+
+		if (previousPosition) {
+			const entryBarrierPosition = barrierPass.entry;
+			const previousEntryEdgeX = previousPosition.x + CAR_BODY_LENGTH / 2;
+			const currentEntryEdgeX = currentPosition.x + CAR_BODY_LENGTH / 2;
+			const isEntryAlignedToBarrier =
+				Math.abs(currentPosition.y - entryBarrierPosition[1]) <= BARRIER_PASS_Y_TOLERANCE &&
+				Math.abs(currentPosition.z - entryBarrierPosition[2]) <= BARRIER_PASS_Z_TOLERANCE;
+
+			if (
+				entryGateOpen &&
+				!hasReportedEntryBarrierPassRef.current &&
+				isEntryAlignedToBarrier &&
+				previousEntryEdgeX > entryBarrierPosition[0] &&
+				currentEntryEdgeX <= entryBarrierPosition[0]
+			) {
+				hasReportedEntryBarrierPassRef.current = true;
+				onEntryBarrierPassed?.();
+			}
+
+			const exitBarrierPosition = barrierPass.exit;
+			const previousExitEdgeX = previousPosition.x - CAR_BODY_LENGTH / 2;
+			const currentExitEdgeX = currentPosition.x - CAR_BODY_LENGTH / 2;
+			const isExitAlignedToBarrier =
+				Math.abs(currentPosition.y - exitBarrierPosition[1]) <= BARRIER_PASS_Y_TOLERANCE &&
+				Math.abs(currentPosition.z - exitBarrierPosition[2]) <= BARRIER_PASS_Z_TOLERANCE;
+
+			if (
+				exitGateOpen &&
+				!hasReportedExitBarrierPassRef.current &&
+				isExitAlignedToBarrier &&
+				previousExitEdgeX < exitBarrierPosition[0] &&
+				currentExitEdgeX >= exitBarrierPosition[0]
+			) {
+				hasReportedExitBarrierPassRef.current = true;
+				onExitBarrierPassed?.();
+			}
 		}
 
-		if (
-			stage === 'exit_processing' &&
-			exitGateOpen &&
-			!hasReportedExitBarrierPassRef.current &&
-			position.x >= EXIT_BARRIER_X + BARRIER_PASS_PADDING
-		) {
-			hasReportedExitBarrierPassRef.current = true;
-			onExitBarrierPassed?.();
-		}
+		previousCarPositionRef.current = currentPosition;
 	};
 
 	useEffect(() => {
@@ -613,11 +693,43 @@ function ParkingScene3D({
 					</button>
 				</div>
 			</div>
-			<Canvas className="parking-canvas" shadows camera={{ position: [0, 28, 16], fov: 44 }}>
+			<Canvas
+				className="parking-canvas"
+				shadows
+				dpr={[1, 1.5]}
+				camera={{ position: [0, 28, 16], fov: 44 }}
+				gl={{
+					antialias: true,
+					toneMapping: THREE.ACESFilmicToneMapping,
+					toneMappingExposure: RENDER_EXPOSURE,
+					outputColorSpace: THREE.SRGBColorSpace
+				}}
+			>
 				<color attach="background" args={[stageColor]} />
-				<ambientLight intensity={1.1} />
-				<directionalLight position={[10, 24, 8]} intensity={2.2} castShadow shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
-				<spotLight position={[-8, 18, 8]} intensity={1.2} angle={0.42} penumbra={0.6} castShadow />
+				<fog attach="fog" args={[stageColor, 34, 96]} />
+				<ambientLight intensity={0.24} color="#dbe7ff" />
+				<hemisphereLight args={['#a7d8ff', '#0b1220', 0.34]} />
+				<directionalLight
+					position={[12, 24, 10]}
+					color="#f4f7ff"
+					intensity={1.25}
+					castShadow
+					shadow-mapSize-width={1024}
+					shadow-mapSize-height={1024}
+					shadow-bias={-0.00008}
+				/>
+				<spotLight
+					position={[-8, 17, 8]}
+					color={stageAccent.rim}
+					intensity={0.45}
+					angle={0.4}
+					penumbra={0.55}
+					castShadow
+				/>
+				<pointLight position={[-2, 4.2, ENTRY_LANE_Z]} color={stageAccent.entry} intensity={0.95} distance={14} decay={2.2} />
+				<pointLight position={[-2, 4.2, EXIT_LANE_Z]} color={stageAccent.exit} intensity={0.95} distance={14} decay={2.2} />
+				<pointLight position={[-16, 8, 14]} color={stageAccent.rim} intensity={0.55} distance={20} decay={2.2} />
+				<pointLight position={[8, 7, -4]} color="#f8fafc" intensity={0.35} distance={38} decay={2} />
 				<group position={[-1, 0, 0]}>
 					<Road />
 					<Gate position={[-3.4, 0, -4.1]} label="Cong vao" gateType="entry" armRotationX={entryArmRotationX} />
@@ -631,7 +743,7 @@ function ParkingScene3D({
 					))}
 					<Car
 						waypoints={carWaypoints}
-						plateNumber="59A12345"
+						plateNumber={plateNumber}
 						loop={shouldLoopCar}
 						onClick={stage === 'parked' ? onCarClick : undefined}
 						onPositionChange={handleCarPositionChange}

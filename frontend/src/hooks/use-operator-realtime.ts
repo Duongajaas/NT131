@@ -1,5 +1,8 @@
 import { useEffect } from 'react';
-import { apiRequest } from '../lib/api';
+import {
+	getParkingOverview,
+	listParkingSessions
+} from '../api/parking.api';
 import {
 	connectSocket,
 	disconnectSocket,
@@ -7,7 +10,7 @@ import {
 	subscribeRealtime
 } from '../lib/socket';
 import { useOperatorStore } from '../store/operator-store';
-import type { ApiEnvelope, OverviewData, RealtimeEnvelope, SessionSummary } from '../types/contracts';
+import type { OverviewData, RealtimeEnvelope } from '../types/contracts';
 
 const isGateState = (value: unknown): value is OverviewData['gate_status']['entry_gate'] => {
 	return (
@@ -25,19 +28,21 @@ export const useOperatorRealtime = (token: string) => {
 
 	useEffect(() => {
 		if (!token) {
+			setConnected(false);
+			setError(undefined);
 			return;
 		}
 
 		const hydrate = async () => {
 			try {
 				const [sessionsRes, overviewRes] = await Promise.all([
-					apiRequest<ApiEnvelope<SessionSummary[]>>('/parking/sessions', { token }),
-					apiRequest<ApiEnvelope<OverviewData>>('/parking/status/overview', { token })
+					listParkingSessions({ token }),
+					getParkingOverview({ token })
 				]);
-				setSessions(sessionsRes.data);
+				setSessions(sessionsRes);
 				setGateStates(
-					overviewRes.data.gate_status.entry_gate,
-					overviewRes.data.gate_status.exit_gate
+					overviewRes.gate_status.entry_gate,
+					overviewRes.gate_status.exit_gate
 				);
 				setError(undefined);
 			} catch (error) {
@@ -90,5 +95,12 @@ export const useOperatorRealtime = (token: string) => {
 			socket.off('disconnect', onDisconnect);
 			disconnectSocket();
 		};
-	}, [token, pushEvent, setConnected, setError, setGateStates, setSessions]);
+	}, [
+		token,
+		pushEvent,
+		setConnected,
+		setError,
+		setGateStates,
+		setSessions
+	]);
 };

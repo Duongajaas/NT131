@@ -7,6 +7,8 @@ export type SessionStatus =
 	| 'completed'
 	| 'blocked';
 
+export type UserRole = 'admin' | 'operator';
+
 export type GateState = 'opening' | 'open' | 'closing' | 'closed' | 'error' | 'offline';
 
 export interface RealtimeEnvelope<TPayload = Record<string, unknown>> {
@@ -48,4 +50,84 @@ export interface OverviewData {
 export interface ApiEnvelope<TData> {
 	message: string;
 	data: TData;
+}
+
+export interface AuthUser {
+	id: string;
+	username: string;
+	full_name?: string;
+	role: UserRole;
+	is_active: boolean;
+}
+
+export interface AuthPayload {
+	user: AuthUser;
+	token: string;
+	refreshToken: string;
+}
+
+export interface ResidentRecord {
+	_id: string;
+	full_name: string;
+	phone?: string;
+	apartment_no: string;
+	is_active: boolean;
+	created_at: string;
+}
+
+export interface VehicleRecord {
+	_id: string;
+	resident_id?: string;
+	vehicle_type: 'motorbike' | 'car';
+	plate_number: string;
+	created_at: string;
+}
+
+export interface RfidCardRecord {
+	_id: string;
+	uid: string;
+	vehicle_id: string;
+	card_type: 'monthly' | 'guest';
+	is_active: boolean;
+	monthly_fee?: number;
+	monthly_started_at?: string;
+	monthly_expires_at?: string;
+	issued_at: string;
+}
+
+export interface TransactionRecord {
+	_id: string;
+	session_id: string;
+	vehicle_id: string;
+	rfid_card_id: string;
+	pricing_policy_id?: string;
+	amount: number;
+	final_amount: number;
+	payment_status: 'pending' | 'paid' | 'failed' | 'waived';
+	paid_at?: string;
+	created_at: string;
+}
+
+export interface RevenueSummary {
+	total_transactions: number;
+	total_revenue: number;
+	paid_transactions: number;
+	pending_transactions: number;
+	failed_transactions: number;
+	waived_transactions: number;
+}
+
+export interface RevenueReport {
+	summary: RevenueSummary;
+	transactions: TransactionRecord[];
+}
+
+export interface ParkingSlotRecord {
+	_id: string;
+	slot_code: string;
+	level: number;
+	slot_type: 'regular' | 'motorbike' | 'handicap';
+	is_occupied: boolean;
+	current_session_id?: string;
+	created_at: string;
 }

@@ -10,13 +10,13 @@ const decodeBase64Url = (value: string) => {
 	return window.atob(padded);
 };
 
-export const decodeRoleFromToken = (token: string): FrontendRole | undefined => {
-	if (!token) {
+export const decodeRoleFromToken = (authToken: string): FrontendRole | undefined => {
+	if (!authToken) {
 		return undefined;
 	}
 
 	try {
-		const payloadSegment = token.split('.')[1];
+		const payloadSegment = authToken.split('.')[1];
 		if (!payloadSegment) {
 			return undefined;
 		}

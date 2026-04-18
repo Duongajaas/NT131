@@ -18,15 +18,59 @@ const getTokenFromHeader = (authHeader?: string): string | null => {
 	return token;
 };
 
+const getSimulatorApiKey = (req: Request): string | null => {
+	const apiKeyHeader = req.headers['x-simulator-api-key'];
+	if (Array.isArray(apiKeyHeader)) {
+		const [firstApiKey] = apiKeyHeader;
+		return firstApiKey?.trim() || null;
+	}
+
+	if (typeof apiKeyHeader === 'string' && apiKeyHeader.trim()) {
+		return apiKeyHeader.trim();
+	}
+
+	const fallbackApiKey = req.headers['x-api-key'];
+	if (Array.isArray(fallbackApiKey)) {
+		const [firstFallbackApiKey] = fallbackApiKey;
+		return firstFallbackApiKey?.trim() || null;
+	}
+
+	if (typeof fallbackApiKey === 'string' && fallbackApiKey.trim()) {
+		return fallbackApiKey.trim();
+	}
+
+	return null;
+};
+
+const validateSimulatorApiKey = (apiKey?: string | null) => {
+	const expectedApiKey = process.env.SIMULATOR_API_KEY;
+	if (!expectedApiKey || !apiKey) {
+		return false;
+	}
+
+	return apiKey === expectedApiKey;
+};
+
 export const authenticateToken = async (
 	req: Request,
 	res: Response,
 	next: NextFunction
 ) => {
 	const token = getTokenFromHeader(req.headers.authorization);
+	const simulatorApiKey = getSimulatorApiKey(req);
+
+	if (validateSimulatorApiKey(simulatorApiKey)) {
+		req.user = {
+			userId: 'simulator-3d',
+			username: 'simulator-3d',
+			role: 'operator'
+		};
+
+		return next();
+	}
 
 	if (!token) {
-		throw new AppError('Access token is required', 401);
+		throw new AppError('Access token or simulator API key is required', 401);
 	}
 
 	let decoded: JwtPayload;
@@ -44,6 +88,7 @@ export const authenticateToken = async (
 	if (!user.is_active) {
 		throw new AppError('User is inactive', 403);
 	}
+
 
 	req.user = {
 		userId: user._id.toString(),

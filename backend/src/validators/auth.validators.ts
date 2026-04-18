@@ -39,5 +39,10 @@ const loginSchema = Joi.object({
 	password: Joi.string().required()
 });
 
+const refreshTokenSchema = Joi.object({
+	refreshToken: Joi.string().required()
+});
+
 export const registerValidator = validateBody(registerSchema);
 export const loginValidator = validateBody(loginSchema);
+export const refreshTokenValidator = validateBody(refreshTokenSchema);

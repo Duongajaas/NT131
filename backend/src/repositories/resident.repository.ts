@@ -1,4 +1,5 @@
 import Resident, { type IResident } from '../models/resident.models.ts';
+import logger from '../utills/logger.ts';
 
 export interface CreateResidentInput {
 	full_name: string;

@@ -24,13 +24,7 @@ export const OperatorPage = () => {
 	};
 
 	return (
-		<AppFrame
-			title="Màn hình Operator"
-			subtitle="Theo dõi biển số realtime, kiểm tra RFID, xử lý thẻ khách vãng lai và thu phí."
-			role={role}
-			username={user.full_name || user.username}
-			onLogout={handleLogout}
-		>
+		<AppFrame role={role} username={user.full_name || user.username} onLogout={handleLogout}>
 			<OperatorDashboard token={safeToken} />
 		</AppFrame>
 	);

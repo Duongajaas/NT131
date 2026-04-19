@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { EventFeed } from './event-feed';
-import { StatusCard } from './status-card';
 import {
 	completeParkingExit,
 	createParkingEntry,
@@ -10,8 +9,9 @@ import {
 } from '../api/parking.api';
 import { createRfidCard, listRfidCards } from '../api/rfid-card.api';
 import { getResidentById } from '../api/resident.api';
-import { createVehicle, getVehicleById } from '../api/vehicle.api';
+import { createVehicle, getVehicleById, listVehicles } from '../api/vehicle.api';
 import { getSocket, requestManualGateCommand } from '../lib/socket';
+import { notifyError, notifyInfo, notifySuccess } from '../lib/toast';
 import { useOperatorStore } from '../store/operator-store';
 import type {
 	ParkingSlotRecord,
@@ -55,10 +55,7 @@ const parseVehicleStatePayload = (event: RealtimeEnvelope | undefined): VehicleS
 export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	const [uid, setUid] = useState('');
 	const [observedPlate, setObservedPlate] = useState('');
-	const [latestDetectedPlate, setLatestDetectedPlate] = useState('');
-	const [lastVehicleEventId, setLastVehicleEventId] = useState('');
 	const [verificationResult, setVerificationResult] = useState<VerifyRfidResult | null>(null);
-	const [message, setMessage] = useState('Sẵn sàng thao tác');
 
 	const [lookupUid, setLookupUid] = useState('');
 	const [lookupBusy, setLookupBusy] = useState(false);
@@ -86,22 +83,44 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		| undefined
 	>();
 
-	const connected = useOperatorStore((state) => state.connected);
 	const events = useOperatorStore((state) => state.events);
 	const sessions = useOperatorStore((state) => state.sessions);
 	const entryGateState = useOperatorStore((state) => state.entryGateState);
 	const exitGateState = useOperatorStore((state) => state.exitGateState);
-	const error = useOperatorStore((state) => state.error);
 	const upsertSession = useOperatorStore((state) => state.upsertSession);
 
-	const blockedSessions = useMemo(
-		() => sessions.filter((session) => session.status === 'blocked').length,
-		[sessions]
+	const latestEntryVehicleEvent = useMemo(
+		() =>
+			events.find((event) => {
+				if (event.eventName !== 'vehicle.state.changed') {
+					return false;
+				}
+
+				const payload = parseVehicleStatePayload(event);
+				return payload.checkpoint === 'entry_rfid' && payload.state === 'arrived' && Boolean(payload.plateNumber);
+			}),
+		[events]
 	);
-	const parkedSessions = useMemo(
-		() => sessions.filter((session) => session.status === 'parked').length,
-		[sessions]
+	const latestExitVehicleEvent = useMemo(
+		() =>
+			events.find((event) => {
+				if (event.eventName !== 'vehicle.state.changed') {
+					return false;
+				}
+
+				const payload = parseVehicleStatePayload(event);
+				return payload.checkpoint === 'exit_rfid' && payload.state === 'leaving' && Boolean(payload.plateNumber);
+			}),
+		[events]
 	);
+	const latestDetectedPlate = latestEntryVehicleEvent
+		? parseVehicleStatePayload(latestEntryVehicleEvent).plateNumber || ''
+		: '';
+	const latestExitDetectedPlate = latestExitVehicleEvent
+		? parseVehicleStatePayload(latestExitVehicleEvent).plateNumber || ''
+		: '';
+	const latestEntryCorrelationId = latestEntryVehicleEvent?.correlationId;
+
 	const [lastSlotEventId, setLastSlotEventId] = useState('');
 	const occupiedSlots = useMemo(
 		() => slotRows.filter((slot) => slot.is_occupied),
@@ -118,7 +137,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			const slots = await listParkingSlots({ token });
 			setSlotRows(slots);
 		} catch (slotError) {
-			setMessage(slotError instanceof Error ? slotError.message : 'Không thể tải danh sách slot');
+			notifyError(slotError instanceof Error ? slotError.message : 'Không thể tải danh sách slot');
 		} finally {
 			setSlotBusy(false);
 		}
@@ -148,32 +167,42 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	}, [events, lastSlotEventId]);
 
 	useEffect(() => {
-		const latestVehicleStateEvent = events.find(
-			(event) => event.eventName === 'vehicle.state.changed'
-		);
-
-		if (!latestVehicleStateEvent || latestVehicleStateEvent.eventId === lastVehicleEventId) {
+		if (!latestDetectedPlate || observedPlate) {
 			return;
 		}
 
-		setLastVehicleEventId(latestVehicleStateEvent.eventId);
-		const payload = parseVehicleStatePayload(latestVehicleStateEvent);
-		if (payload.checkpoint !== 'entry_rfid' || payload.state !== 'arrived' || !payload.plateNumber) {
-			return;
-		}
-
-		setLatestDetectedPlate(payload.plateNumber);
-		if (!observedPlate) {
-			setObservedPlate(payload.plateNumber);
-		}
-	}, [events, lastVehicleEventId, observedPlate]);
+		setObservedPlate(latestDetectedPlate);
+	}, [latestDetectedPlate, observedPlate]);
 
 	const runAction = async (task: () => Promise<void>) => {
 		try {
 			await task();
 		} catch (taskError) {
-			setMessage(taskError instanceof Error ? taskError.message : 'Thao tác thất bại');
+			notifyError(taskError instanceof Error ? taskError.message : 'Thao tác thất bại');
 		}
+	};
+
+	const processEntry = async (correlationId?: string) => {
+		if (!uid || !observedPlate) {
+			notifyError('Cần nhập UID và biển số để tạo phiên vào bãi');
+			return null;
+		}
+
+		const response = await createParkingEntry(
+			{
+				uid,
+				plate_number: normalizeText(observedPlate),
+				plate_confidence: 95,
+				correlation_id: correlationId || latestEntryCorrelationId || crypto.randomUUID()
+			},
+			{ token }
+		);
+
+		upsertSession(response.session);
+		setPaymentSessionId(response.session._id);
+		void loadParkingSlots();
+		notifySuccess(`Đã tạo phiên: ${response.gate_action.toUpperCase()} (${response.session._id})`);
+		return response;
 	};
 
 	const handleManualGateCommand = async (
@@ -182,7 +211,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	) => {
 		const socket = getSocket();
 		if (!socket || !socket.connected) {
-			setMessage('Socket chưa sẵn sàng để điều khiển cổng');
+			notifyError('Socket chưa sẵn sàng để điều khiển cổng');
 			return;
 		}
 
@@ -194,11 +223,9 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 				correlationId: crypto.randomUUID()
 			});
 
-			setMessage(
-				`Đã gửi lệnh ${command} cho ${gateId} (${response.state || 'không rõ trạng thái'})`
-			);
+			notifySuccess(`Đã gửi lệnh ${command} cho ${gateId} (${response.state || 'không rõ trạng thái'})`);
 		} catch (error) {
-			setMessage(error instanceof Error ? error.message : 'Điều khiển cổng thất bại');
+			notifyError(error instanceof Error ? error.message : 'Điều khiển cổng thất bại');
 		} finally {
 			setManualGateBusy(false);
 		}
@@ -206,55 +233,46 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 
 	const handleVerifyRfid = async () => {
 		if (!uid || !observedPlate) {
-			setMessage('Cần nhập UID và biển số quan sát để kiểm tra RFID');
+			notifyError('Cần nhập UID và biển số quan sát để kiểm tra RFID');
 			return;
 		}
 
 		await runAction(async () => {
+			const correlationId = latestEntryCorrelationId || crypto.randomUUID();
 			const result = await verifyRfidPlate(
 				{
 					uid,
 					observed_plate_number: normalizeText(observedPlate),
-					correlation_id: crypto.randomUUID()
+					correlation_id: correlationId
 				},
 				{ token }
 			);
 
 			setVerificationResult(result);
-			setMessage(
+			if (result.decision === 'accepted') {
+				notifySuccess(
+					`Kiểm tra RFID: ${result.decision.toUpperCase()} - expected ${result.expected_plate_number || 'N/A'}`
+				);
+				await processEntry(correlationId);
+				return;
+			}
+
+			notifyError(
 				`Kiểm tra RFID: ${result.decision.toUpperCase()} - expected ${result.expected_plate_number || 'N/A'}`
 			);
 		});
 	};
 
 	const handleProcessEntry = async () => {
-		if (!uid || !observedPlate) {
-			setMessage('Cần nhập UID và biển số để tạo phiên vào bãi');
-			return;
-		}
-
 		await runAction(async () => {
-			const response = await createParkingEntry(
-				{
-					uid,
-					plate_number: normalizeText(observedPlate),
-					plate_confidence: 95,
-					correlation_id: crypto.randomUUID()
-				},
-				{ token }
-			);
-
-			upsertSession(response.session);
-			setPaymentSessionId(response.session._id);
-			setMessage(`Đã tạo phiên: ${response.gate_action.toUpperCase()} (${response.session._id})`);
-			void loadParkingSlots();
+			await processEntry();
 		});
 	};
 
 	const lookupCardOwnership = async () => {
 		const normalizedUid = normalizeText(lookupUid);
 		if (!normalizedUid) {
-			setMessage('Nhập UID cần tra cứu');
+			notifyError('Nhập UID cần tra cứu');
 			return;
 		}
 
@@ -270,6 +288,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 					ownerType: 'unknown',
 					message: 'UID chưa có trong hệ thống. Có thể cấp thẻ khách vãng lai.'
 				});
+				notifyInfo('UID chưa có trong hệ thống. Có thể cấp thẻ khách vãng lai.');
 				return;
 			}
 
@@ -281,6 +300,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 					card,
 					vehicle
 				});
+				notifySuccess('Thẻ thuộc nhóm khách vãng lai');
 				return;
 			}
 
@@ -292,8 +312,9 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 				vehicle,
 				resident
 			});
+			notifySuccess('Thẻ thuộc cư dân');
 		} catch (lookupError) {
-			setMessage(lookupError instanceof Error ? lookupError.message : 'Tra cứu RFID thất bại');
+			notifyError(lookupError instanceof Error ? lookupError.message : 'Tra cứu RFID thất bại');
 		} finally {
 			setLookupBusy(false);
 		}
@@ -301,19 +322,26 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 
 	const issueGuestCard = async () => {
 		if (!guestUid || !guestPlate) {
-			setMessage('Nhập UID và biển số để cấp thẻ khách');
+			notifyError('Nhập UID và biển số để cấp thẻ khách');
 			return;
 		}
 
 		setGuestBusy(true);
 		try {
-			const vehicle = await createVehicle(
-				{
-					vehicle_type: guestVehicleType,
-					plate_number: normalizeText(guestPlate)
-				},
-				{ token }
+			const normalizedGuestPlate = normalizeText(guestPlate);
+			const existingVehicles = await listVehicles({ token }, { search: normalizedGuestPlate });
+			const existingVehicle = existingVehicles.find(
+				(item) => normalizeText(item.plate_number) === normalizedGuestPlate
 			);
+			const vehicle =
+				existingVehicle ??
+				(await createVehicle(
+					{
+						vehicle_type: guestVehicleType,
+						plate_number: normalizedGuestPlate
+					},
+					{ token }
+				));
 
 			const card = await createRfidCard(
 				{
@@ -333,9 +361,10 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			});
 			setUid(card.uid);
 			setObservedPlate(vehicle.plate_number);
-			setMessage(`Đã cấp thẻ khách UID ${card.uid} cho xe ${vehicle.plate_number}`);
+			notifySuccess(`Đã cấp thẻ khách UID ${card.uid} cho xe ${vehicle.plate_number}`);
+			await processEntry(latestEntryCorrelationId || undefined);
 		} catch (issueError) {
-			setMessage(issueError instanceof Error ? issueError.message : 'Cấp thẻ khách thất bại');
+			notifyError(issueError instanceof Error ? issueError.message : 'Cấp thẻ khách thất bại');
 		} finally {
 			setGuestBusy(false);
 		}
@@ -343,7 +372,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 
 	const collectGuestPayment = async () => {
 		if (!paymentSessionId || !paymentExitPlate) {
-			setMessage('Nhập session id và biển số khi ra để thu phí');
+			notifyError('Nhập session id và biển số khi ra để thu phí');
 			return;
 		}
 
@@ -371,10 +400,10 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 				status: response.transaction.payment_status
 			});
 
-			setMessage(`Đã thu phí vãng lai: ${due.toLocaleString('vi-VN')} VND`);
+			notifySuccess(`Đã thu phí vãng lai: ${due.toLocaleString('vi-VN')} VND`);
 			void loadParkingSlots();
 		} catch (paymentError) {
-			setMessage(paymentError instanceof Error ? paymentError.message : 'Thu phí thất bại');
+			notifyError(paymentError instanceof Error ? paymentError.message : 'Thu phí thất bại');
 		} finally {
 			setPaymentBusy(false);
 		}
@@ -382,26 +411,51 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 
 	return (
 		<section className="page-grid">
-			<section className="grid stats-grid">
-				<StatusCard
-					label="Socket"
-					value={connected ? 'Connected' : 'Disconnected'}
-					description={error || 'operator.join active'}
-					tone={connected ? 'good' : 'warn'}
-				/>
-				<StatusCard label="Phiên" value={sessions.length} description="Tổng phiên hiện có" />
-				<StatusCard
-					label="Blocked"
-					value={blockedSessions}
-					description="Cần xử lý thủ công"
-					tone={blockedSessions > 0 ? 'danger' : 'neutral'}
-				/>
-				<StatusCard
-					label="Đang đỗ"
-					value={parkedSessions}
-					description={`Entry ${entryGateState} | Exit ${exitGateState}`}
-					tone="good"
-				/>
+			<section className="panel barrier-panel">
+				<header className="panel-head">
+					<h2>Điều khiển thanh chắn</h2>
+					<p>4 nút mở/đóng cho cổng vào và cổng ra.</p>
+				</header>
+				<div className="barrier-control-grid">
+					<button
+						type="button"
+						className="btn barrier-control-button barrier-control-open"
+						onClick={() => void handleManualGateCommand('entry-gate', 'open')}
+						disabled={manualGateBusy}
+					>
+						Mở cổng vào
+					</button>
+					<button
+						type="button"
+						className="btn barrier-control-button barrier-control-close"
+						onClick={() => void handleManualGateCommand('entry-gate', 'close')}
+						disabled={manualGateBusy}
+					>
+						Đóng cổng vào
+					</button>
+					<button
+						type="button"
+						className="btn barrier-control-button barrier-control-open"
+						onClick={() => void handleManualGateCommand('exit-gate', 'open')}
+						disabled={manualGateBusy}
+					>
+						Mở cổng ra
+					</button>
+					<button
+						type="button"
+						className="btn barrier-control-button barrier-control-close"
+						onClick={() => void handleManualGateCommand('exit-gate', 'close')}
+						disabled={manualGateBusy}
+					>
+						Đóng cổng ra
+					</button>
+				</div>
+				<p className="barrier-control-state">
+					Entry gate: {entryGateState} · Exit gate: {exitGateState}
+				</p>
+				<p className="event-meta">
+					{manualGateBusy ? 'Đang gửi lệnh thanh chắn...' : 'Sẵn sàng điều khiển thanh chắn.'}
+				</p>
 			</section>
 
 			<section className="grid operator-workspace-grid">
@@ -410,48 +464,6 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 						<h2>Chức năng vận hành cổng</h2>
 						<p>Kiểm tra RFID, xử lý khách vãng lai, thu phí và thao tác phiên vào/ra.</p>
 					</header>
-					<p className="event-meta">{message}</p>
-
-					<div className="detail-box">
-						<p>
-							Điều khiển thanh chắn thủ công: Entry <strong>{entryGateState}</strong> | Exit{' '}
-							<strong>{exitGateState}</strong>
-						</p>
-						<div className="button-row">
-							<button
-								type="button"
-								className="btn btn-secondary"
-								onClick={() => void handleManualGateCommand('entry-gate', 'open')}
-								disabled={manualGateBusy}
-							>
-								Mở cổng vào
-							</button>
-							<button
-								type="button"
-								className="btn btn-secondary"
-								onClick={() => void handleManualGateCommand('entry-gate', 'close')}
-								disabled={manualGateBusy}
-							>
-								Đóng cổng vào
-							</button>
-							<button
-								type="button"
-								className="btn btn-secondary"
-								onClick={() => void handleManualGateCommand('exit-gate', 'open')}
-								disabled={manualGateBusy}
-							>
-								Mở cổng ra
-							</button>
-							<button
-								type="button"
-								className="btn btn-secondary"
-								onClick={() => void handleManualGateCommand('exit-gate', 'close')}
-								disabled={manualGateBusy}
-							>
-								Đóng cổng ra
-							</button>
-						</div>
-					</div>
 
 					<div className="split-field-grid">
 						<label className="field">
@@ -486,7 +498,11 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 					</div>
 
 					{verificationResult ? (
-						<div className="detail-box">
+						<div
+							className={`detail-box verification-result detail-box-${
+								verificationResult.decision === 'accepted' ? 'good' : 'danger'
+							}`}
+						>
 							<p>
 								Kết quả: <strong>{verificationResult.decision.toUpperCase()}</strong>
 							</p>
@@ -606,7 +622,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 						<p>Nửa màn hình bên phải hiển thị vùng ảnh biển số từ dữ liệu realtime.</p>
 					</header>
 
-					<div className="plate-preview-stage">
+					<div className="plate-preview-stage plate-preview-grid">
 						<div className="plate-preview-frame">
 							<p className="plate-preview-head">CAMERA ENTRY</p>
 							<div className="plate-preview-center">
@@ -617,6 +633,25 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 							<p className="plate-preview-meta">
 								Detected: {latestDetectedPlate || '-'} | Observed: {observedPlate || '-'}
 							</p>
+						</div>
+						<div className="plate-preview-frame plate-preview-exit">
+							<p className="plate-preview-head">CAMERA EXIT</p>
+							<div className="plate-preview-center">
+								<div className="plate-visual-number plate-visual-number-exit">
+									{latestExitDetectedPlate || 'CHUA CO XE RA'}
+								</div>
+							</div>
+							<p className="plate-preview-meta">Detected: {latestExitDetectedPlate || '-'}</p>
+							<div className="button-row">
+								<button
+									type="button"
+									className="btn btn-secondary"
+									onClick={() => setPaymentExitPlate(latestExitDetectedPlate)}
+									disabled={!latestExitDetectedPlate}
+								>
+									Lấy biển số exit
+								</button>
+							</div>
 						</div>
 					</div>
 				</section>

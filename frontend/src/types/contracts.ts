@@ -83,6 +83,16 @@ export interface VehicleRecord {
 	created_at: string;
 }
 
+export interface PricingPolicyRecord {
+	_id: string;
+	vehicle_type: 'motorbike' | 'car';
+	card_type: 'monthly' | 'guest';
+	price_per_hour: number;
+	free_minutes: number;
+	is_active: boolean;
+	effective_from: string;
+}
+
 export interface RfidCardRecord {
 	_id: string;
 	uid: string;

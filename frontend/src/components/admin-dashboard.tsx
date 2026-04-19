@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { registerUser } from '../api/auth.api';
-import { createParkingSlot, getRevenueReport } from '../api/parking.api';
+import { createParkingSlot, createPricingPolicy, getRevenueReport, listPricingPolicies } from '../api/parking.api';
 import { createResident, listResidents } from '../api/resident.api';
 import { createRfidCard, listRfidCards } from '../api/rfid-card.api';
 import { createVehicle } from '../api/vehicle.api';
+import { notifyError, notifySuccess } from '../lib/toast';
 import type {
 	ResidentRecord,
 	RevenueReport,
+	PricingPolicyRecord,
 	RfidCardRecord,
 	TransactionRecord
 } from '../types/contracts';
@@ -34,8 +36,8 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 	const [residents, setResidents] = useState<ResidentRecord[]>([]);
 	const [monthlyCards, setMonthlyCards] = useState<RfidCardRecord[]>([]);
 	const [revenueReport, setRevenueReport] = useState<RevenueReport | null>(null);
+	const [pricingPolicies, setPricingPolicies] = useState<PricingPolicyRecord[]>([]);
 	const [loading, setLoading] = useState(false);
-	const [message, setMessage] = useState('Sẵn sàng quản trị');
 
 	const [search, setSearch] = useState('');
 	const [fromDate, setFromDate] = useState('');
@@ -62,6 +64,14 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 	const [slotType, setSlotType] = useState<'regular' | 'motorbike' | 'handicap'>('regular');
 	const [createSlotBusy, setCreateSlotBusy] = useState(false);
 
+	const [pricingVehicleType, setPricingVehicleType] = useState<'motorbike' | 'car'>('car');
+	const [pricingCardType, setPricingCardType] = useState<'monthly' | 'guest'>('guest');
+	const [pricingPricePerHour, setPricingPricePerHour] = useState('0');
+	const [pricingFreeMinutes, setPricingFreeMinutes] = useState('15');
+	const [pricingEffectiveFrom, setPricingEffectiveFrom] = useState('');
+	const [pricingActive, setPricingActive] = useState(true);
+	const [createPricingBusy, setCreatePricingBusy] = useState(false);
+
 	const activeResidents = useMemo(
 		() => residents.filter((resident) => resident.is_active).length,
 		[residents]
@@ -74,7 +84,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 	const loadDashboard = async () => {
 		setLoading(true);
 		try {
-			const [residentRows, monthlyCardRows, report] = await Promise.all([
+			const [residentRows, monthlyCardRows, report, pricingRows] = await Promise.all([
 				listResidents({ token }, search || undefined),
 				listRfidCards({ token }, { card_type: 'monthly' }),
 				getRevenueReport(
@@ -84,15 +94,17 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 						to_date: toIsoEndOfDay(toDate),
 						limit: 25
 					}
-				)
+				),
+				listPricingPolicies({ token })
 			]);
 
 			setResidents(residentRows);
 			setMonthlyCards(monthlyCardRows);
 			setRevenueReport(report);
-			setMessage('Đã tải dữ liệu admin thành công');
+			setPricingPolicies(pricingRows);
+			notifySuccess('Đã tải dữ liệu admin thành công');
 		} catch (loadError) {
-			setMessage(loadError instanceof Error ? loadError.message : 'Tải dữ liệu admin thất bại');
+			notifyError(loadError instanceof Error ? loadError.message : 'Tải dữ liệu admin thất bại');
 		} finally {
 			setLoading(false);
 		}
@@ -105,7 +117,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 
 	const createResidentAndCard = async () => {
 		if (!fullName || !apartmentNo || !plateNumber || !uid || !startedAt || !expiresAt) {
-			setMessage('Thiếu dữ liệu để tạo cư dân và cấp thẻ tháng');
+			notifyError('Thiếu dữ liệu để tạo cư dân và cấp thẻ tháng');
 			return;
 		}
 
@@ -143,7 +155,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 				{ token }
 			);
 
-			setMessage(`Đã tạo cư dân ${resident.full_name} và cấp thẻ tháng thành công`);
+			notifySuccess(`Đã tạo cư dân ${resident.full_name} và cấp thẻ tháng thành công`);
 			setFullName('');
 			setPhone('');
 			setApartmentNo('');
@@ -154,7 +166,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 			setExpiresAt('');
 			await loadDashboard();
 		} catch (createError) {
-			setMessage(createError instanceof Error ? createError.message : 'Tạo cư dân/cấp thẻ thất bại');
+			notifyError(createError instanceof Error ? createError.message : 'Tạo cư dân/cấp thẻ thất bại');
 		} finally {
 			setCreateBusy(false);
 		}
@@ -162,7 +174,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 
 	const createOperatorAccount = async () => {
 		if (!operatorUsername || !operatorPassword) {
-			setMessage('Thiếu username hoặc password để tạo operator');
+			notifyError('Thiếu username hoặc password để tạo operator');
 			return;
 		}
 
@@ -178,12 +190,12 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 				{ token }
 			);
 
-			setMessage(`Đã tạo operator mới: ${response.user.username}`);
+			notifySuccess(`Đã tạo operator mới: ${response.user.username}`);
 			setOperatorFullName('');
 			setOperatorUsername('');
 			setOperatorPassword('');
 		} catch (createError) {
-			setMessage(createError instanceof Error ? createError.message : 'Tạo operator thất bại');
+			notifyError(createError instanceof Error ? createError.message : 'Tạo operator thất bại');
 		} finally {
 			setCreateOperatorBusy(false);
 		}
@@ -194,12 +206,12 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 		const parsedLevel = Number(slotLevel);
 
 		if (!normalizedSlotCode) {
-			setMessage('Thiếu mã slot để tạo slot mới');
+			notifyError('Thiếu mã slot để tạo slot mới');
 			return;
 		}
 
 		if (!Number.isInteger(parsedLevel) || parsedLevel < 0) {
-			setMessage('Level slot phải là số nguyên không âm');
+			notifyError('Level slot phải là số nguyên không âm');
 			return;
 		}
 
@@ -217,11 +229,61 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 			setSlotCode('');
 			setSlotLevel('0');
 			setSlotType('regular');
-			setMessage(`Đã tạo slot ${createdSlot.slot_code} thành công`);
+			notifySuccess(`Đã tạo slot ${createdSlot.slot_code} thành công`);
 		} catch (createError) {
-			setMessage(createError instanceof Error ? createError.message : 'Tạo slot thất bại');
+			notifyError(createError instanceof Error ? createError.message : 'Tạo slot thất bại');
 		} finally {
 			setCreateSlotBusy(false);
+		}
+	};
+
+	const createPricingPolicyRule = async () => {
+		const parsedPrice = Number(pricingPricePerHour);
+		const parsedFreeMinutes = Number(pricingFreeMinutes);
+		const normalizedEffectiveFrom = pricingEffectiveFrom.trim();
+
+		if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+			notifyError('Giá theo giờ phải là số không âm');
+			return;
+		}
+
+		if (!Number.isInteger(parsedFreeMinutes) || parsedFreeMinutes < 0) {
+			notifyError('Số phút miễn phí phải là số nguyên không âm');
+			return;
+		}
+
+		if (normalizedEffectiveFrom && Number.isNaN(new Date(normalizedEffectiveFrom).getTime())) {
+			notifyError('Ngày hiệu lực không hợp lệ');
+			return;
+		}
+
+		setCreatePricingBusy(true);
+		try {
+			const createdPolicy = await createPricingPolicy(
+				{
+					vehicle_type: pricingVehicleType,
+					card_type: pricingCardType,
+					price_per_hour: parsedPrice,
+					free_minutes: parsedFreeMinutes,
+					is_active: pricingActive,
+					effective_from: normalizedEffectiveFrom
+						? new Date(normalizedEffectiveFrom).toISOString()
+						: undefined
+				},
+				{ token }
+			);
+
+			setPricingPolicies((current) => [createdPolicy, ...current]);
+			setPricingPricePerHour('0');
+			setPricingFreeMinutes('15');
+			setPricingEffectiveFrom('');
+			notifySuccess(
+				`Đã tạo cấu hình phí ${createdPolicy.vehicle_type}/${createdPolicy.card_type} thành công`
+			);
+		} catch (createError) {
+			notifyError(createError instanceof Error ? createError.message : 'Tạo cấu hình phí thất bại');
+		} finally {
+			setCreatePricingBusy(false);
 		}
 	};
 
@@ -290,8 +352,118 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 
 					<section className="panel">
 						<header className="panel-head">
+							<h2>Thiết lập phí gửi xe</h2>
+							<p>Admin tạo mức phí theo giờ cho từng loại xe và loại thẻ.</p>
+						</header>
+
+						<div className="triple-field-grid">
+							<label className="field">
+								<span>Loại xe</span>
+								<select
+									value={pricingVehicleType}
+									onChange={(event) =>
+										setPricingVehicleType(event.target.value as 'motorbike' | 'car')
+									}
+								>
+									<option value="car">Ô tô</option>
+									<option value="motorbike">Xe máy</option>
+								</select>
+							</label>
+							<label className="field">
+								<span>Loại thẻ</span>
+								<select
+									value={pricingCardType}
+									onChange={(event) => setPricingCardType(event.target.value as 'monthly' | 'guest')}
+								>
+									<option value="guest">Khách vãng lai</option>
+									<option value="monthly">Thẻ tháng</option>
+								</select>
+							</label>
+							<label className="field">
+								<span>Hiệu lực từ</span>
+								<input
+									type="datetime-local"
+									value={pricingEffectiveFrom}
+									onChange={(event) => setPricingEffectiveFrom(event.target.value)}
+								/>
+							</label>
+						</div>
+
+						<div className="split-field-grid">
+							<label className="field">
+								<span>Phí theo giờ (VND)</span>
+								<input
+									type="number"
+									min={0}
+									value={pricingPricePerHour}
+									onChange={(event) => setPricingPricePerHour(event.target.value)}
+								/>
+							</label>
+							<label className="field">
+								<span>Phút miễn phí</span>
+								<input
+									type="number"
+									min={0}
+									value={pricingFreeMinutes}
+									onChange={(event) => setPricingFreeMinutes(event.target.value)}
+								/>
+							</label>
+						</div>
+
+						<label className="field">
+							<span>
+								<input
+									type="checkbox"
+									checked={pricingActive}
+									onChange={(event) => setPricingActive(event.target.checked)}
+								/>{' '}
+								Kích hoạt
+							</span>
+						</label>
+
+						<div className="button-row">
+							<button
+								type="button"
+								className="btn"
+								onClick={() => void createPricingPolicyRule()}
+								disabled={createPricingBusy}
+							>
+								{createPricingBusy ? 'Đang lưu phí...' : 'Lưu phí gửi xe'}
+							</button>
+						</div>
+
+						<div className="session-table-wrap">
+							<table className="session-table">
+								<thead>
+									<tr>
+										<th>Xe</th>
+										<th>Thẻ</th>
+										<th>Giờ</th>
+										<th>Miễn phí</th>
+										<th>Hiệu lực</th>
+										<th>Active</th>
+									</tr>
+								</thead>
+								<tbody>
+									{pricingPolicies.map((policy) => (
+										<tr key={policy._id}>
+											<td>{policy.vehicle_type}</td>
+											<td>{policy.card_type}</td>
+											<td>{policy.price_per_hour.toLocaleString('vi-VN')} VND</td>
+											<td>{policy.free_minutes} phút</td>
+											<td>{new Date(policy.effective_from).toLocaleString()}</td>
+											<td>{policy.is_active ? 'Yes' : 'No'}</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+						</div>
+					</section>
+
+					<section className="panel">
+						<header className="panel-head">
 							<h2>Bộ chức năng admin</h2>
-							<p>{message}</p>
+							<p>Các thao tác thành công hoặc thất bại sẽ hiện dưới dạng toast popup.</p>
 						</header>
 
 						<div className="triple-field-grid">

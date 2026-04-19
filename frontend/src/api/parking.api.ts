@@ -3,6 +3,7 @@ import type {
 	ApiEnvelope,
 	OverviewData,
 	ParkingSlotRecord,
+	PricingPolicyRecord,
 	RevenueReport,
 	SessionSummary
 } from '../types/contracts';
@@ -19,6 +20,15 @@ export interface CreateParkingSlotInput {
 	slot_code: string;
 	level: number;
 	slot_type?: ParkingSlotRecord['slot_type'];
+}
+
+export interface CreatePricingPolicyInput {
+	vehicle_type: PricingPolicyRecord['vehicle_type'];
+	card_type?: PricingPolicyRecord['card_type'];
+	price_per_hour: number;
+	free_minutes?: number;
+	is_active?: boolean;
+	effective_from?: string;
 }
 
 export interface VerifyRfidResult {
@@ -81,6 +91,44 @@ export const createParkingSlot = async (
 export const getParkingOverview = async ({ token }: AuthOptions) => {
 	const response = await requestJson<ApiEnvelope<OverviewData>>('/parking/status/overview', {
 		token
+	});
+	return response.data;
+};
+
+export const listPricingPolicies = async (
+	{ token }: AuthOptions,
+	query?: {
+		vehicle_type?: PricingPolicyRecord['vehicle_type'];
+		card_type?: PricingPolicyRecord['card_type'];
+		is_active?: boolean;
+	}
+) => {
+	const params = new URLSearchParams();
+	if (query?.vehicle_type) {
+		params.set('vehicle_type', query.vehicle_type);
+	}
+	if (query?.card_type) {
+		params.set('card_type', query.card_type);
+	}
+	if (typeof query?.is_active === 'boolean') {
+		params.set('is_active', String(query.is_active));
+	}
+
+	const suffix = params.toString() ? `?${params.toString()}` : '';
+	const response = await requestJson<ApiEnvelope<PricingPolicyRecord[]>>(`/pricing-policies${suffix}`, {
+		token
+	});
+	return response.data;
+};
+
+export const createPricingPolicy = async (
+	input: CreatePricingPolicyInput,
+	{ token }: AuthOptions
+) => {
+	const response = await requestJson<ApiEnvelope<PricingPolicyRecord>>('/pricing-policies', {
+		method: 'POST',
+		token,
+		body: JSON.stringify(input)
 	});
 	return response.data;
 };

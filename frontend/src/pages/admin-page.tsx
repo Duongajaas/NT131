@@ -20,13 +20,7 @@ export const AdminPage = () => {
 	};
 
 	return (
-		<AppFrame
-			title="Màn hình Admin"
-			subtitle="Quản lý cư dân, cấp thẻ cư dân mới, theo dõi doanh thu và số cư dân."
-			role={role}
-			username={user.full_name || user.username}
-			onLogout={handleLogout}
-		>
+		<AppFrame role={role} username={user.full_name || user.username} onLogout={handleLogout}>
 			<AdminDashboard token={token} />
 		</AppFrame>
 	);

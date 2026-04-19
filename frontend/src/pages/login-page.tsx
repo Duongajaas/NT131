@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { login } from '../api/auth.api';
+import { notifyError, notifySuccess } from '../lib/toast';
 import { useAuthStore } from '../store/auth-store';
 
 const roleRouteMap: Record<'admin' | 'operator', '/admin' | '/operator'> = {
@@ -16,7 +17,6 @@ export const LoginPage = () => {
 	const role = useAuthStore((state) => state.role);
 	const [username, setUsername] = useState('');
 	const [password, setPassword] = useState('');
-	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
 
 	useEffect(() => {
@@ -29,15 +29,15 @@ export const LoginPage = () => {
 
 	const submit = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		setError('');
 		setBusy(true);
 
 		try {
 			const payload = await login({ username, password });
 			setSession(payload);
+			notifySuccess('Đăng nhập thành công');
 			navigate(roleRouteMap[payload.user.role], { replace: true });
 		} catch (submitError) {
-			setError(submitError instanceof Error ? submitError.message : 'Đăng nhập thất bại');
+			notifyError(submitError instanceof Error ? submitError.message : 'Đăng nhập thất bại');
 		} finally {
 			setBusy(false);
 		}
@@ -78,8 +78,6 @@ export const LoginPage = () => {
 						{busy ? 'Đang đăng nhập...' : 'Đăng nhập'}
 					</button>
 				</form>
-
-				{error ? <p className="form-error">{error}</p> : null}
 			</section>
 		</div>
 	);

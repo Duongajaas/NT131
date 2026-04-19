@@ -9,6 +9,7 @@ import {
 	joinOperatorRoom,
 	subscribeRealtime
 } from '../lib/socket';
+import { notifyError } from '../lib/toast';
 import { useOperatorStore } from '../store/operator-store';
 import type { OverviewData, RealtimeEnvelope } from '../types/contracts';
 
@@ -46,7 +47,9 @@ export const useOperatorRealtime = (token: string) => {
 				);
 				setError(undefined);
 			} catch (error) {
-				setError(error instanceof Error ? error.message : 'Hydration failed');
+				const message = error instanceof Error ? error.message : 'Hydration failed';
+				setError(message);
+				notifyError(message);
 			}
 		};
 
@@ -57,7 +60,9 @@ export const useOperatorRealtime = (token: string) => {
 				setConnected(true);
 				void hydrate();
 			} catch (error) {
-				setError(error instanceof Error ? error.message : 'Room join failed');
+				const message = error instanceof Error ? error.message : 'Room join failed';
+				setError(message);
+				notifyError(message);
 			}
 		};
 
@@ -83,6 +88,7 @@ export const useOperatorRealtime = (token: string) => {
 		socket.on('disconnect', onDisconnect);
 		socket.on('connect_error', (error) => {
 			setError(error.message);
+			notifyError(error.message);
 		});
 
 		if (socket.connected) {

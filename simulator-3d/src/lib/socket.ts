@@ -60,6 +60,43 @@ export const joinSimulatorRoom = (socketRef: Socket, apiKey?: string) => {
 	});
 };
 
+export interface SimulatorGateCommandPayload {
+	gateId: 'entry-gate' | 'exit-gate';
+	command: 'open' | 'close';
+	sessionId?: string;
+	correlationId?: string;
+}
+
+export const requestSimulatorGateCommand = (
+	socketRef: Socket,
+	payload: SimulatorGateCommandPayload
+) => {
+	return new Promise<{ correlationId?: string; result?: string; state?: string }>((resolve, reject) => {
+		socketRef.emit(
+			'simulator.gate.command.request',
+			payload,
+			(ack: {
+				success: boolean;
+				message?: string;
+				correlationId?: string;
+				result?: string;
+				state?: string;
+			}) => {
+				if (ack.success) {
+					resolve({
+						correlationId: ack.correlationId,
+						result: ack.result,
+						state: ack.state
+					});
+					return;
+				}
+
+				reject(new Error(ack.message || 'Failed to request simulator gate command'));
+			}
+		);
+	});
+};
+
 export interface SimulatorCheckpointPayload {
 	plateNumber: string;
 	checkpoint: 'entry_rfid' | 'exit_rfid';

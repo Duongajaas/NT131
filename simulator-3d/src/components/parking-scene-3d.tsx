@@ -17,11 +17,16 @@ type SimulatorStage =
 
 interface ParkingScene3DProps {
 	stage: SimulatorStage;
-	plateNumber: string;
+	activePlateNumber: string;
+	activeSceneSlotId?: string;
+	parkedVehicles?: Array<{
+		localId: string;
+		plateNumber: string;
+		sceneSlotId: number;
+	}>;
 	entryGateOpen?: boolean;
 	exitGateOpen?: boolean;
-	preferredSlotId?: string;
-	onCarClick?: () => void;
+	onParkedCarClick?: (vehicleId: string) => void;
 	onEntryBarrierPassed?: () => void;
 	onExitBarrierPassed?: () => void;
 }
@@ -461,6 +466,7 @@ function Car({
 	plateNumber,
 	bodyColor = '#2563eb',
 	loop = false,
+	rotationY = 0,
 	onClick,
 	onPositionChange
 }: {
@@ -468,6 +474,7 @@ function Car({
 	plateNumber: string;
 	bodyColor?: string;
 	loop?: boolean;
+	rotationY?: number;
 	onClick?: () => void;
 	onPositionChange?: (position: THREE.Vector3) => void;
 }) {
@@ -544,13 +551,19 @@ function Car({
 	});
 
 	return (
-		<group ref={carRef} position={waypoints[0]} castShadow onClick={handleCarClick}>
+		<group ref={carRef} position={waypoints[0]} rotation={[0, rotationY, 0]} castShadow onClick={handleCarClick}>
 			<mesh position={[0, CAR_BODY_HEIGHT / 2, 0]} castShadow>
 				<boxGeometry args={[SLOT_LENGTH, CAR_BODY_HEIGHT, SLOT_WIDTH]} />
 				<meshStandardMaterial color={bodyColor} metalness={0.22} roughness={0.35} />
 			</mesh>
 			<Html position={[0, CAR_BODY_HEIGHT + 0.42, 0]} center>
-				<div className="plate-tag" style={{ borderColor: plateTone }}>{plateNumber}</div>
+				<div
+					className="plate-tag"
+					style={{ borderColor: plateTone, cursor: onClick ? 'pointer' : 'default' }}
+					title={onClick ? 'Click to exit' : undefined}
+				>
+					{plateNumber}
+				</div>
 			</Html>
 		</group>
 	);
@@ -558,16 +571,17 @@ function Car({
 
 function ParkingScene3D({
 	stage,
-	plateNumber,
+	activePlateNumber,
+	activeSceneSlotId = '',
+	parkedVehicles = [],
 	entryGateOpen = false,
 	exitGateOpen = false,
-	preferredSlotId = '',
-	onCarClick,
+	onParkedCarClick,
 	onEntryBarrierPassed,
 	onExitBarrierPassed
 }: ParkingScene3DProps) {
-	const parsedPreferredSlotId = Number.parseInt(preferredSlotId, 10);
-	const targetSlotId = isSupportedDemoSlotId(parsedPreferredSlotId) ? parsedPreferredSlotId : 8;
+	const parsedActiveSceneSlotId = Number.parseInt(activeSceneSlotId, 10);
+	const targetSlotId = isSupportedDemoSlotId(parsedActiveSceneSlotId) ? parsedActiveSceneSlotId : 8;
 	const carWaypointsByStage = useMemo(() => createCarWaypoints(targetSlotId), [targetSlotId]);
 	const sceneShellRef = useRef<HTMLDivElement>(null);
 	const [isFullscreen, setIsFullscreen] = useState(false);
@@ -580,12 +594,8 @@ function ParkingScene3D({
 	const stageColor = stageBackgroundTone[stage];
 	const stageAccent = stageAccentTone[stage];
 	const occupiedSlotIds = useMemo(() => {
-		if (stage === 'parked' || stage === 'approaching_exit' || stage === 'exit_processing') {
-			return new Set<number>([targetSlotId]);
-		}
-
-		return new Set<number>();
-	}, [stage, targetSlotId]);
+		return new Set<number>(parkedVehicles.map((vehicle) => vehicle.sceneSlotId));
+	}, [parkedVehicles]);
 
 	const gateOpenAngle = Math.PI / 2.8;
 	const entryArmRotationX = entryGateOpen ? -gateOpenAngle : 0;
@@ -606,8 +616,6 @@ function ParkingScene3D({
 	useEffect(() => {
 		previousCarPositionRef.current = null;
 	}, [carWaypoints]);
-
-	
 
 	const handleCarPositionChange = (position: THREE.Vector3) => {
 		const previousPosition = previousCarPositionRef.current;
@@ -732,8 +740,8 @@ function ParkingScene3D({
 				<pointLight position={[8, 7, -4]} color="#f8fafc" intensity={0.35} distance={38} decay={2} />
 				<group position={[-1, 0, 0]}>
 					<Road />
-					<Gate position={[-3.4, 0, -4.1]} label="Cong vao" gateType="entry" armRotationX={entryArmRotationX} />
-					<Gate position={[3.4, 0, 4.1]} label="Cong ra" gateType="exit" armRotationX={exitArmRotationX} />
+					<Gate position={[-3.4, 0, -4.1]} label="Cổng vào" gateType="entry" armRotationX={entryArmRotationX} />
+					<Gate position={[3.4, 0, 4.1]} label="Cổng ra" gateType="exit" armRotationX={exitArmRotationX} />
 					<Booth position={[-0.7, 0, -0.1]} title="Checkpoint booth" />
 					<BarrierLine />
 					<FlowGuideLines />
@@ -741,13 +749,32 @@ function ParkingScene3D({
 					{SLOT_LAYOUT.map((slot) => (
 						<Slot key={`slot-${slot.id}`} position={slot.position} occupied={occupiedSlotIds.has(slot.id)} index={slot.id} />
 					))}
-					<Car
-						waypoints={carWaypoints}
-						plateNumber={plateNumber}
-						loop={shouldLoopCar}
-						onClick={stage === 'parked' ? onCarClick : undefined}
-						onPositionChange={handleCarPositionChange}
-					/>
+					{parkedVehicles.map((vehicle) => {
+						const slot = SLOT_LAYOUT.find((slotItem) => slotItem.id === vehicle.sceneSlotId);
+						if (!slot) {
+							return null;
+						}
+
+						return (
+							<Car
+								key={`parked-${vehicle.localId}`}
+								waypoints={[slot.position]}
+								plateNumber={vehicle.plateNumber}
+								bodyColor="#16a34a"
+								loop={false}
+								rotationY={-Math.PI / 2}
+								onClick={() => onParkedCarClick?.(vehicle.localId)}
+							/>
+						);
+					})}
+					{activePlateNumber ? (
+						<Car
+							waypoints={carWaypoints}
+							plateNumber={activePlateNumber}
+							loop={shouldLoopCar}
+							onPositionChange={handleCarPositionChange}
+						/>
+					) : null}
 					<Html position={[1.5, 0.35, ENTRY_LANE_Z]} center>
 						<div className="scene-lane-label">RFID check-in</div>
 					</Html>

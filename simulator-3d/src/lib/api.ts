@@ -115,6 +115,12 @@ export interface CreateVehicleInput {
 	plate_number: string;
 }
 
+export interface ListVehiclesQuery {
+	search?: string;
+	vehicle_type?: 'motorbike' | 'car';
+	resident_id?: string;
+}
+
 export interface CreateRfidCardInput {
 	uid: string;
 	vehicle_id: string;
@@ -131,6 +137,18 @@ export interface CreateParkingEntryInput {
 	plate_confidence?: number;
 	entry_image_url?: string;
 	correlation_id?: string;
+}
+
+export interface ListParkingSlotsQuery {
+	is_occupied?: boolean;
+	level?: number;
+	slot_type?: 'regular' | 'motorbike' | 'handicap';
+}
+
+export interface ListParkingSessionsQuery {
+	status?: SessionSummary['status'];
+	rfid_card_id?: string;
+	vehicle_id?: string;
 }
 
 export interface AssignParkingSlotInput {
@@ -182,6 +200,26 @@ export const createVehicle = async (input: CreateVehicleInput, apiKey?: string) 
 		method: 'POST',
 		apiKey: resolveAuthKey(apiKey),
 		body: JSON.stringify(input)
+	});
+
+	return response.data;
+};
+
+export const listVehicles = async (query: ListVehiclesQuery = {}, apiKey?: string) => {
+	const params = new URLSearchParams();
+	if (query.search) {
+		params.set('search', query.search);
+	}
+	if (query.vehicle_type) {
+		params.set('vehicle_type', query.vehicle_type);
+	}
+	if (query.resident_id) {
+		params.set('resident_id', query.resident_id);
+	}
+
+	const suffix = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiRequest<ApiEnvelope<VehicleRecord[]>>(`/vehicles${suffix}`, {
+		apiKey: resolveAuthKey(apiKey)
 	});
 
 	return response.data;
@@ -241,68 +279,91 @@ export const completeParkingExit = async (
 	return response.data;
 };
 
-export const createSimulatorParkingSession = async (input: {
-	plateNumber: string;
-	uid: string;
-	vehicleType?: 'motorbike' | 'car';
-	plateConfidence?: number;
-	entryImageUrl?: string;
-	correlationId?: string;
-	apiKey?: string;
-}): Promise<SimulatorParkingSessionResult> => {
-	const apiKey = resolveAuthKey(input.apiKey);
-	const correlationId = input.correlationId?.trim() || crypto.randomUUID();
-	const normalizedPlateNumber = input.plateNumber.trim().toUpperCase();
-	const normalizedUid = input.uid.trim().toUpperCase();
+export const listParkingSlots = async (
+	query: ListParkingSlotsQuery = {},
+	apiKey?: string
+) => {
+	const params = new URLSearchParams();
+	if (typeof query.is_occupied === 'boolean') {
+		params.set('is_occupied', String(query.is_occupied));
+	}
+	if (typeof query.level === 'number') {
+		params.set('level', String(query.level));
+	}
+	if (query.slot_type) {
+		params.set('slot_type', query.slot_type);
+	}
 
-	const vehicle = await createVehicle(
+	const suffix = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiRequest<ApiEnvelope<ParkingSlotRecord[]>>(`/parking/status/slots${suffix}`, {
+		apiKey: resolveAuthKey(apiKey)
+	});
+
+	return response.data;
+};
+
+export const listParkingSessions = async (
+	query: ListParkingSessionsQuery = {},
+	apiKey?: string
+) => {
+	const params = new URLSearchParams();
+	if (query.status) {
+		params.set('status', query.status);
+	}
+	if (query.rfid_card_id) {
+		params.set('rfid_card_id', query.rfid_card_id);
+	}
+	if (query.vehicle_id) {
+		params.set('vehicle_id', query.vehicle_id);
+	}
+
+	const suffix = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiRequest<ApiEnvelope<SessionSummary[]>>(`/parking/sessions${suffix}`, {
+		apiKey: resolveAuthKey(apiKey)
+	});
+
+	return response.data;
+};
+
+export const getRfidCardById = async (rfidCardId: string, apiKey?: string) => {
+	const response = await apiRequest<ApiEnvelope<RfidCardRecord>>(`/rfid-cards/${rfidCardId}`, {
+		apiKey: resolveAuthKey(apiKey)
+	});
+
+	return response.data;
+};
+
+export const getVehicleById = async (vehicleId: string, apiKey?: string) => {
+	const response = await apiRequest<ApiEnvelope<VehicleRecord>>(`/vehicles/${vehicleId}`, {
+		apiKey: resolveAuthKey(apiKey)
+	});
+
+	return response.data;
+};
+
+export const createSimulatorVehicle = async (input: {
+	plateNumber: string;
+	vehicleType?: 'motorbike' | 'car';
+	apiKey?: string;
+}) => {
+	const apiKey = resolveAuthKey(input.apiKey);
+	const normalizedPlateNumber = input.plateNumber.trim().toUpperCase();
+	const existingVehicles = await listVehicles({ search: normalizedPlateNumber }, apiKey);
+	const existingVehicle = existingVehicles.find(
+		(vehicle) => vehicle.plate_number.trim().toUpperCase() === normalizedPlateNumber
+	);
+
+	if (existingVehicle) {
+		return existingVehicle;
+	}
+
+	return createVehicle(
 		{
 			vehicle_type: input.vehicleType ?? 'car',
 			plate_number: normalizedPlateNumber
 		},
 		apiKey
 	);
-
-	const rfidCard = await createRfidCard(
-		{
-			uid: normalizedUid,
-			vehicle_id: vehicle._id,
-			card_type: 'guest',
-			is_active: true
-		},
-		apiKey
-	);
-
-	const entryResult = await createParkingEntry(
-		{
-			uid: normalizedUid,
-			plate_number: normalizedPlateNumber,
-			plate_confidence: input.plateConfidence ?? 100,
-			entry_image_url: input.entryImageUrl,
-			correlation_id: correlationId
-		},
-		apiKey
-	);
-
-	if (entryResult.gate_action === 'deny') {
-		throw new ApiError(entryResult.reason || 'Simulator entry denied', 409, entryResult);
-	}
-
-	const slotResult = await assignParkingSlot(
-		entryResult.session._id,
-		{
-			correlation_id: correlationId
-		},
-		apiKey
-	);
-
-	return {
-		vehicle,
-		rfidCard,
-		session: slotResult.session,
-		slot: slotResult.slot,
-		correlationId
-	};
 };
 
 export const completeSimulatorParkingExit = async (input: {

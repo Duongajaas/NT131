@@ -1,73 +1,135 @@
-# React + TypeScript + Vite
+# NT131 Frontend Console
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Description
+This is the frontend dashboard for NT131 Smart Parking.
 
-Currently, two official plugins are available:
+It provides a role-based interface for:
+- Operator workflow (RFID verification, gate control, parking status).
+- Admin workflow (management and monitoring pages).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Built with React, TypeScript, and Vite for educational and integration purposes.
 
-## React Compiler
+## Technologies
+We are using the following technologies:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React
+- TypeScript
+- Vite
+- React Router
+- Zustand
+- Axios
+- Socket.IO Client
+- ESLint
 
-## Expanding the ESLint configuration
+## Installation and Running
+### Prerequisites
+- Node.js 22+
+- Backend service running (default local URL: `http://localhost:5000`)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### Environment
+Create `.env` from the provided example:
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cp .env.example .env
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Default `.env` values:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```env
+VITE_API_BASE_URL=http://localhost:5000/api/v1
+VITE_SOCKET_URL=http://localhost:5000
+VITE_SIMULATOR_API_KEY=
 ```
+
+### Run application
+```bash
+npm install
+npm run dev
+```
+
+After running, open the app at the Vite URL (usually `http://localhost:5173`).
+
+Build for production:
+
+```bash
+npm run build
+```
+
+Preview production build:
+
+```bash
+npm run preview
+```
+
+## Project Structure
+This frontend is organized by feature and shared layers:
+
+```text
+src
+├── api          # HTTP clients and API modules
+├── components   # Shared UI components
+├── hooks        # Custom React hooks
+├── lib          # Utility helpers
+├── pages        # Route-level pages (login/operator/admin)
+├── store        # Zustand state stores
+├── types        # TypeScript types/interfaces
+├── App.tsx      # Route setup and protected route logic
+└── main.tsx     # App bootstrap
+```
+
+## Routes
+Main app routes:
+
+- `/login`: authentication page
+- `/operator`: operator dashboard
+- `/admin`: admin dashboard
+
+Unknown routes are redirected based on current authenticated role.
+
+### Route Flowchart
+```mermaid
+flowchart LR
+U[User] --> BR[BrowserRouter]
+BR -->|/login| L[LoginPage]
+BR -->|/operator| P1[ProtectedRoute]
+BR -->|/admin| P2[ProtectedRoute]
+P1 --> OP[OperatorPage]
+P2 --> AD[AdminPage]
+BR -->|*| D[DefaultRedirect]
+D --> R[Redirect by role]
+```
+
+## Workflow of a Frontend Request
+1. User interacts with page components.
+2. Page calls API functions in `src/api`.
+3. Backend returns REST data and emits realtime events.
+4. Frontend store/state updates UI.
+
+### Workflow Flowchart
+```mermaid
+flowchart LR
+U[User Action] --> PAGE[Page Component]
+PAGE --> API[API module in src/api]
+API --> AX[Axios request]
+AX --> BE[Backend API]
+BE --> RES[Response]
+RES --> STORE[Zustand store and local state]
+STORE --> UI[UI re-render]
+BE --> SOCK[Socket.IO event]
+SOCK --> UI
+```
+
+## Development
+Current focus:
+- Keep operator/admin flows stable with backend API contracts.
+- Keep realtime Socket.IO handling aligned with backend event contracts.
+
+Planned improvements:
+- Add integration tests for critical operator actions.
+- Add UI/UX and accessibility refinements.
+
+## References
+- React documentation
+- Vite documentation
+- TypeScript documentation
+- Socket.IO documentation

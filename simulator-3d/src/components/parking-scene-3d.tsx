@@ -2,6 +2,8 @@ import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
 import { Html, OrbitControls } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 
 type SimulatorStage =
 	| 'idle'
@@ -15,14 +17,18 @@ type SimulatorStage =
 	| 'exit_processing'
 	| 'completed';
 
+type VehicleType = 'motorbike' | 'car';
+
 interface ParkingScene3DProps {
 	stage: SimulatorStage;
 	activePlateNumber: string;
+	activeVehicleType?: VehicleType;
 	activeSceneSlotId?: string;
 	parkedVehicles?: Array<{
 		localId: string;
 		plateNumber: string;
 		sceneSlotId: number;
+		vehicleType?: VehicleType;
 	}>;
 	entryGateOpen?: boolean;
 	exitGateOpen?: boolean;
@@ -36,14 +42,12 @@ type PathPoint = [number, number, number];
 const CAR_DRIVE_Y = 0.1;
 const SLOT_WIDTH = 1.9;
 const SLOT_LENGTH = 3.4;
-const CAR_BODY_HEIGHT = 1.2;
 const ENTRY_LANE_Z = -3;
 const EXIT_LANE_Z = 3;
 const ENTRY_RFID_POINT: PathPoint = [1.5, CAR_DRIVE_Y, ENTRY_LANE_Z];
 const EXIT_RFID_POINT: PathPoint = [-1.5, CAR_DRIVE_Y, EXIT_LANE_Z];
 const ENTRY_BARRIER_X = -5;
 const EXIT_BARRIER_X = 5;
-const CAR_BODY_LENGTH = SLOT_LENGTH;
 const BARRIER_PASS_Y_TOLERANCE = 0.3;
 const BARRIER_PASS_Z_TOLERANCE = 0.2;
 const ENTRY_BARRIER_POSITION: PathPoint = [ENTRY_BARRIER_X, 0.35, ENTRY_LANE_Z];
@@ -52,6 +56,208 @@ const barrierPass = {
 	entry: ENTRY_BARRIER_POSITION,
 	exit: EXIT_BARRIER_POSITION
 } as const;
+
+const VEHICLE_DIMENSIONS = {
+	car: {
+		length: SLOT_WIDTH,
+		width: SLOT_LENGTH,
+		bodyHeight: 0.5,
+		roofHeight: 0.62,
+		wheelRadius: 0.34,
+		wheelWidth: 0.26
+	},
+	motorbike: {
+		length: 2.25,
+		width: 0.9,
+		bodyHeight: 0.72,
+		roofHeight: 0.24,
+		wheelRadius: 0.28,
+		wheelWidth: 0.18
+	}
+} as const;
+
+const getVehicleLength = (vehicleType: VehicleType) => VEHICLE_DIMENSIONS[vehicleType].length;
+
+// External Ferrari model source from https://github.com/shliamin/JS-3D-Car.
+// Ensure usage complies with the original model attribution and license terms.
+const JS3D_CAR_MODEL_URL =
+	import.meta.env.VITE_JS3D_CAR_MODEL_URL?.trim() ||
+	'https://raw.githubusercontent.com/shliamin/JS-3D-Car/master/models/ferrari.glb';
+const MOTORBIKE_MODEL_URL =
+	import.meta.env.VITE_MOTORBIKE_MODEL_URL?.trim() ||
+	'/model/source/2024%20Ducati%20StreetFighter%20V4%20S.glb';
+const DRACO_DECODER_URL =
+	import.meta.env.VITE_DRACO_DECODER_URL?.trim() ||
+	'https://www.gstatic.com/draco/versioned/decoders/1.5.7/';
+
+let js3dCarTemplate: THREE.Group | null = null;
+let js3dCarTemplatePromise: Promise<THREE.Group> | null = null;
+let js3dCarTemplateFailed = false;
+let motorbikeTemplate: THREE.Group | null = null;
+let motorbikeTemplatePromise: Promise<THREE.Group> | null = null;
+let motorbikeTemplateFailed = false;
+
+const createGltfLoaderWithDraco = () => {
+	const loader = new GLTFLoader();
+	const dracoLoader = new DRACOLoader();
+	dracoLoader.setDecoderPath(DRACO_DECODER_URL);
+	loader.setDRACOLoader(dracoLoader);
+	return { loader, dracoLoader };
+};
+
+const cloneObjectWithMaterials = (source: THREE.Object3D) => {
+	const cloned = source.clone(true);
+
+	cloned.traverse((node) => {
+		const mesh = node as THREE.Mesh;
+		if (!mesh.isMesh) {
+			return;
+		}
+
+		mesh.castShadow = true;
+		mesh.receiveShadow = true;
+
+		if (Array.isArray(mesh.material)) {
+			mesh.material = mesh.material.map((material) => material.clone());
+			return;
+		}
+
+		if (mesh.material) {
+			mesh.material = mesh.material.clone();
+		}
+	});
+
+	return cloned;
+};
+
+const tintCarBodyMaterial = (root: THREE.Object3D, color: string) => {
+	root.traverse((node) => {
+		const mesh = node as THREE.Mesh;
+		if (!mesh.isMesh || !mesh.material) {
+			return;
+		}
+
+		const isBodyPart = mesh.name.toLowerCase().includes('body');
+		if (!isBodyPart) {
+			return;
+		}
+
+		if (Array.isArray(mesh.material)) {
+			mesh.material.forEach((material) => {
+				const phongMaterial = material as THREE.MeshPhongMaterial;
+				if ('color' in phongMaterial) {
+					phongMaterial.color.set(color);
+				}
+			});
+			return;
+		}
+
+		const phongMaterial = mesh.material as THREE.MeshPhongMaterial;
+		if ('color' in phongMaterial) {
+			phongMaterial.color.set(color);
+		}
+	});
+};
+
+const fitModelToVehicleBounds = (
+	model: THREE.Object3D,
+	dimensions: { length: number; width: number; bodyHeight: number; roofHeight: number }
+) => {
+	const box = new THREE.Box3().setFromObject(model);
+	const size = new THREE.Vector3();
+	box.getSize(size);
+
+	if (size.x <= 0 || size.y <= 0 || size.z <= 0) {
+		return;
+	}
+
+	const targetHeight = dimensions.bodyHeight + dimensions.roofHeight;
+	const scaleX = dimensions.length / size.x;
+	const scaleY = targetHeight / size.y;
+	const scaleZ = dimensions.width / size.z;
+
+	model.scale.set(scaleX, scaleY, scaleZ);
+	model.updateMatrixWorld(true);
+
+	const fittedBox = new THREE.Box3().setFromObject(model);
+	const center = new THREE.Vector3();
+	fittedBox.getCenter(center);
+	model.position.set(-center.x, -fittedBox.min.y, -center.z);
+};
+
+const loadJs3dCarTemplate = () => {
+	if (js3dCarTemplate) {
+		return Promise.resolve(js3dCarTemplate);
+	}
+
+	if (js3dCarTemplateFailed) {
+		return Promise.reject(new Error('JS-3D-Car model is unavailable'));
+	}
+
+	if (js3dCarTemplatePromise) {
+		return js3dCarTemplatePromise;
+	}
+
+	js3dCarTemplatePromise = new Promise<THREE.Group>((resolve, reject) => {
+		const { loader, dracoLoader } = createGltfLoaderWithDraco();
+
+		loader.load(
+			JS3D_CAR_MODEL_URL,
+			(gltf) => {
+				dracoLoader.dispose();
+				const root = (gltf.scene.children[0] ?? gltf.scene) as THREE.Group;
+				root.updateMatrixWorld(true);
+				js3dCarTemplate = root;
+				resolve(root);
+			},
+			undefined,
+			(error) => {
+				dracoLoader.dispose();
+				js3dCarTemplateFailed = true;
+				reject(error);
+			}
+		);
+	});
+
+	return js3dCarTemplatePromise;
+};
+
+const loadMotorbikeTemplate = () => {
+	if (motorbikeTemplate) {
+		return Promise.resolve(motorbikeTemplate);
+	}
+
+	if (motorbikeTemplateFailed) {
+		return Promise.reject(new Error('Motorbike model is unavailable'));
+	}
+
+	if (motorbikeTemplatePromise) {
+		return motorbikeTemplatePromise;
+	}
+
+	motorbikeTemplatePromise = new Promise<THREE.Group>((resolve, reject) => {
+		const { loader, dracoLoader } = createGltfLoaderWithDraco();
+
+		loader.load(
+			MOTORBIKE_MODEL_URL,
+			(gltf) => {
+				dracoLoader.dispose();
+				const root = gltf.scene as THREE.Group;
+				root.updateMatrixWorld(true);
+				motorbikeTemplate = root;
+				resolve(root);
+			},
+			undefined,
+			(error) => {
+				dracoLoader.dispose();
+				motorbikeTemplateFailed = true;
+				reject(error);
+			}
+		);
+	});
+
+	return motorbikeTemplatePromise;
+};
 
 const isSupportedDemoSlotId = (slotId: number): slotId is 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 =>
 	slotId >= 1 && slotId <= 8;
@@ -464,6 +670,7 @@ function Slot({ position, occupied, index }: { position: PathPoint; occupied: bo
 function Car({
 	waypoints,
 	plateNumber,
+	vehicleType = 'car',
 	bodyColor = '#2563eb',
 	loop = false,
 	rotationY = 0,
@@ -472,6 +679,7 @@ function Car({
 }: {
 	waypoints: PathPoint[];
 	plateNumber: string;
+	vehicleType?: VehicleType;
 	bodyColor?: string;
 	loop?: boolean;
 	rotationY?: number;
@@ -480,10 +688,118 @@ function Car({
 }) {
 	const carRef = useRef<THREE.Group>(null);
 	const plateTone = useMemo(() => '#64748b', []);
+	const dimensions = VEHICLE_DIMENSIONS[vehicleType];
+	const bodyBaseColor = vehicleType === 'motorbike' ? '#334155' : bodyColor;
+	const accentColor = vehicleType === 'motorbike' ? '#f59e0b' : '#38bdf8';
+	const wheelOffsetZ = dimensions.width / 2 - dimensions.wheelWidth * 0.45;
+	const roofCenterY = dimensions.wheelRadius + dimensions.bodyHeight + dimensions.roofHeight / 2;
+	const [carTemplate, setCarTemplate] = useState<THREE.Group | null>(js3dCarTemplate);
+	const [bikeTemplate, setBikeTemplate] = useState<THREE.Group | null>(motorbikeTemplate);
 	const progressRef = useRef(0);
-	const headingOffset = Math.PI / 2;
 	const progressPerSecond = 0.12;
 	const travelPointRef = useRef(new THREE.Vector3());
+
+	useEffect(() => {
+		if (vehicleType !== 'car') {
+			return;
+		}
+
+		if (js3dCarTemplate) {
+			setCarTemplate(js3dCarTemplate);
+			return;
+		}
+
+		if (js3dCarTemplateFailed) {
+			setCarTemplate(null);
+			return;
+		}
+
+		let cancelled = false;
+		void loadJs3dCarTemplate()
+			.then((template) => {
+				if (cancelled) {
+					return;
+				}
+
+				setCarTemplate(template);
+			})
+			.catch(() => {
+				if (cancelled) {
+					return;
+				}
+
+				setCarTemplate(null);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [vehicleType]);
+
+		useEffect(() => {
+			if (vehicleType !== 'motorbike') {
+				return;
+			}
+
+			if (motorbikeTemplate) {
+				setBikeTemplate(motorbikeTemplate);
+				return;
+			}
+
+			if (motorbikeTemplateFailed) {
+				setBikeTemplate(null);
+				return;
+			}
+
+			let cancelled = false;
+			void loadMotorbikeTemplate()
+				.then((template) => {
+					if (cancelled) {
+						return;
+					}
+
+					setBikeTemplate(template);
+				})
+				.catch(() => {
+					if (cancelled) {
+						return;
+					}
+
+					setBikeTemplate(null);
+				});
+
+			return () => {
+				cancelled = true;
+			};
+		}, [vehicleType]);
+
+	const fittedCarModel = useMemo(() => {
+		if (vehicleType !== 'car' || !carTemplate) {
+			return null;
+		}
+
+		const cloned = cloneObjectWithMaterials(carTemplate);
+		tintCarBodyMaterial(cloned, bodyColor);
+		fitModelToVehicleBounds(cloned, dimensions);
+		return cloned;
+	}, [vehicleType, carTemplate, bodyColor, dimensions]);
+
+	const fittedMotorbikeModel = useMemo(() => {
+		if (vehicleType !== 'motorbike' || !bikeTemplate) {
+			return null;
+		}
+
+		const cloned = cloneObjectWithMaterials(bikeTemplate);
+		fitModelToVehicleBounds(cloned, dimensions);
+		return cloned;
+	}, [vehicleType, bikeTemplate, dimensions]);
+
+	const headingOffset =
+		vehicleType === 'car' && fittedCarModel
+			? Math.PI
+			: vehicleType === 'motorbike' && fittedMotorbikeModel
+				? Math.PI / 2 + Math.PI
+				: Math.PI / 2;
 
 	const handleCarClick = (event: ThreeEvent<MouseEvent>) => {
 		event.stopPropagation();
@@ -550,13 +866,86 @@ function Car({
 		onPositionChange?.(carRef.current.position);
 	});
 
+	const renderFallbackCar = () => (
+		<>
+			<mesh position={[0, dimensions.wheelRadius + dimensions.bodyHeight * 0.52, 0]} castShadow>
+				<boxGeometry args={[dimensions.length, dimensions.bodyHeight, dimensions.width]} />
+				<meshStandardMaterial color={bodyColor} metalness={0.22} roughness={0.32} />
+			</mesh>
+			<mesh position={[-0.2, roofCenterY, 0]} castShadow>
+				<boxGeometry args={[dimensions.length * 0.56, dimensions.roofHeight, dimensions.width * 0.78]} />
+				<meshStandardMaterial color="#cbd5e1" metalness={0.4} roughness={0.24} opacity={0.92} transparent />
+			</mesh>
+			<mesh position={[dimensions.length * 0.45, dimensions.wheelRadius + dimensions.bodyHeight * 0.58, 0]} castShadow>
+				<boxGeometry args={[0.2, 0.18, dimensions.width * 0.6]} />
+				<meshStandardMaterial color="#f8fafc" emissive="#f8fafc" emissiveIntensity={0.45} />
+			</mesh>
+			<mesh position={[-dimensions.length * 0.48, dimensions.wheelRadius + dimensions.bodyHeight * 0.58, 0]} castShadow>
+				<boxGeometry args={[0.2, 0.18, dimensions.width * 0.6]} />
+				<meshStandardMaterial color="#f97316" emissive="#ea580c" emissiveIntensity={0.32} />
+			</mesh>
+			{[-1, 1].flatMap((side) =>
+				[-0.32, 0.32].map((offsetX) => (
+					<mesh
+						key={`car-wheel-${side}-${offsetX}`}
+						position={[offsetX * dimensions.length, dimensions.wheelRadius, side * wheelOffsetZ]}
+						rotation={[Math.PI / 2, 0, 0]}
+						castShadow
+					>
+						<cylinderGeometry args={[dimensions.wheelRadius, dimensions.wheelRadius, dimensions.wheelWidth, 24]} />
+						<meshStandardMaterial color="#0f172a" roughness={0.82} />
+					</mesh>
+				))
+			)}
+		</>
+	);
+
+	const renderMotorbike = () => (
+		<>
+			<mesh position={[0, dimensions.wheelRadius + dimensions.bodyHeight * 0.55, 0]} castShadow>
+				<boxGeometry args={[dimensions.length * 0.72, dimensions.bodyHeight * 0.36, dimensions.width * 0.46]} />
+				<meshStandardMaterial color={bodyBaseColor} metalness={0.35} roughness={0.4} />
+			</mesh>
+			<mesh position={[dimensions.length * 0.08, dimensions.wheelRadius + dimensions.bodyHeight * 0.92, 0]} castShadow>
+				<boxGeometry args={[dimensions.length * 0.34, dimensions.roofHeight, dimensions.width * 0.5]} />
+				<meshStandardMaterial color="#111827" />
+			</mesh>
+			<mesh position={[-dimensions.length * 0.16, dimensions.wheelRadius + dimensions.bodyHeight * 0.83, 0]} castShadow>
+				<boxGeometry args={[dimensions.length * 0.56, 0.08, 0.09]} />
+				<meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.28} />
+			</mesh>
+			<mesh position={[dimensions.length * 0.28, dimensions.wheelRadius + dimensions.bodyHeight * 0.94, 0]} castShadow>
+				<boxGeometry args={[0.08, 0.24, dimensions.width * 0.62]} />
+				<meshStandardMaterial color="#94a3b8" metalness={0.4} roughness={0.3} />
+			</mesh>
+			<mesh position={[dimensions.length * 0.4, dimensions.wheelRadius + dimensions.bodyHeight * 0.74, 0]} castShadow>
+				<boxGeometry args={[0.12, 0.1, dimensions.width * 0.42]} />
+				<meshStandardMaterial color="#f8fafc" emissive="#f8fafc" emissiveIntensity={0.32} />
+			</mesh>
+			{[-0.3, 0.3].map((offsetX) => (
+				<mesh
+					key={`bike-wheel-${offsetX}`}
+					position={[offsetX * dimensions.length, dimensions.wheelRadius, 0]}
+					rotation={[Math.PI / 2, 0, 0]}
+					castShadow
+				>
+					<cylinderGeometry args={[dimensions.wheelRadius, dimensions.wheelRadius, dimensions.wheelWidth, 24]} />
+					<meshStandardMaterial color="#020617" roughness={0.82} />
+				</mesh>
+			))}
+		</>
+	);
+
 	return (
 		<group ref={carRef} position={waypoints[0]} rotation={[0, rotationY, 0]} castShadow onClick={handleCarClick}>
-			<mesh position={[0, CAR_BODY_HEIGHT / 2, 0]} castShadow>
-				<boxGeometry args={[SLOT_LENGTH, CAR_BODY_HEIGHT, SLOT_WIDTH]} />
-				<meshStandardMaterial color={bodyColor} metalness={0.22} roughness={0.35} />
-			</mesh>
-			<Html position={[0, CAR_BODY_HEIGHT + 0.42, 0]} center>
+			{vehicleType === 'car'
+				? fittedCarModel
+					? <primitive object={fittedCarModel} />
+					: renderFallbackCar()
+				: fittedMotorbikeModel
+					? <primitive object={fittedMotorbikeModel} />
+					: renderMotorbike()}
+			<Html position={[0, roofCenterY + 0.5, 0]} center>
 				<div
 					className="plate-tag"
 					style={{ borderColor: plateTone, cursor: onClick ? 'pointer' : 'default' }}
@@ -572,6 +961,7 @@ function Car({
 function ParkingScene3D({
 	stage,
 	activePlateNumber,
+	activeVehicleType = 'car',
 	activeSceneSlotId = '',
 	parkedVehicles = [],
 	entryGateOpen = false,
@@ -593,6 +983,7 @@ function ParkingScene3D({
 
 	const stageColor = stageBackgroundTone[stage];
 	const stageAccent = stageAccentTone[stage];
+	const activeVehicleLength = getVehicleLength(activeVehicleType);
 	const occupiedSlotIds = useMemo(() => {
 		return new Set<number>(parkedVehicles.map((vehicle) => vehicle.sceneSlotId));
 	}, [parkedVehicles]);
@@ -615,7 +1006,7 @@ function ParkingScene3D({
 
 	useEffect(() => {
 		previousCarPositionRef.current = null;
-	}, [carWaypoints]);
+	}, [carWaypoints, activeVehicleType]);
 
 	const handleCarPositionChange = (position: THREE.Vector3) => {
 		const previousPosition = previousCarPositionRef.current;
@@ -623,8 +1014,8 @@ function ParkingScene3D({
 
 		if (previousPosition) {
 			const entryBarrierPosition = barrierPass.entry;
-			const previousEntryEdgeX = previousPosition.x + CAR_BODY_LENGTH / 2;
-			const currentEntryEdgeX = currentPosition.x + CAR_BODY_LENGTH / 2;
+			const previousEntryEdgeX = previousPosition.x + activeVehicleLength / 2;
+			const currentEntryEdgeX = currentPosition.x + activeVehicleLength / 2;
 			const isEntryAlignedToBarrier =
 				Math.abs(currentPosition.y - entryBarrierPosition[1]) <= BARRIER_PASS_Y_TOLERANCE &&
 				Math.abs(currentPosition.z - entryBarrierPosition[2]) <= BARRIER_PASS_Z_TOLERANCE;
@@ -641,8 +1032,8 @@ function ParkingScene3D({
 			}
 
 			const exitBarrierPosition = barrierPass.exit;
-			const previousExitEdgeX = previousPosition.x - CAR_BODY_LENGTH / 2;
-			const currentExitEdgeX = currentPosition.x - CAR_BODY_LENGTH / 2;
+			const previousExitEdgeX = previousPosition.x - activeVehicleLength / 2;
+			const currentExitEdgeX = currentPosition.x - activeVehicleLength / 2;
 			const isExitAlignedToBarrier =
 				Math.abs(currentPosition.y - exitBarrierPosition[1]) <= BARRIER_PASS_Y_TOLERANCE &&
 				Math.abs(currentPosition.z - exitBarrierPosition[2]) <= BARRIER_PASS_Z_TOLERANCE;
@@ -760,9 +1151,10 @@ function ParkingScene3D({
 								key={`parked-${vehicle.localId}`}
 								waypoints={[slot.position]}
 								plateNumber={vehicle.plateNumber}
+								vehicleType={vehicle.vehicleType ?? 'car'}
 								bodyColor="#16a34a"
 								loop={false}
-								rotationY={-Math.PI / 2}
+								rotationY={0}
 								onClick={() => onParkedCarClick?.(vehicle.localId)}
 							/>
 						);
@@ -771,6 +1163,7 @@ function ParkingScene3D({
 						<Car
 							waypoints={carWaypoints}
 							plateNumber={activePlateNumber}
+							vehicleType={activeVehicleType}
 							loop={shouldLoopCar}
 							onPositionChange={handleCarPositionChange}
 						/>

@@ -182,6 +182,26 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		}
 	};
 
+	const clearOperatorInputs = (section: 'entry' | 'guest' | 'payment' | 'lookup' | 'all') => {
+		if (section === 'entry' || section === 'all') {
+			setUid('');
+			setObservedPlate('');
+			setVerificationResult(null);
+		}
+		if (section === 'guest' || section === 'all') {
+			setGuestUid('');
+			setGuestPlate('');
+		}
+		if (section === 'payment' || section === 'all') {
+			setPaymentSessionId('');
+			setPaymentExitPlate('');
+			setAmountReceived('0');
+		}
+		if (section === 'lookup' || section === 'all') {
+			setLookupUid('');
+		}
+	};
+
 	const processEntry = async (correlationId?: string) => {
 		if (!uid || !observedPlate) {
 			notifyError('Cần nhập UID và biển số để tạo phiên vào bãi');
@@ -202,6 +222,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		setPaymentSessionId(response.session._id);
 		void loadParkingSlots();
 		notifySuccess(`Đã tạo phiên: ${response.gate_action.toUpperCase()} (${response.session._id})`);
+		clearOperatorInputs('entry');
 		return response;
 	};
 
@@ -313,6 +334,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 				resident
 			});
 			notifySuccess('Thẻ thuộc cư dân');
+			clearOperatorInputs('lookup');
 		} catch (lookupError) {
 			notifyError(lookupError instanceof Error ? lookupError.message : 'Tra cứu RFID thất bại');
 		} finally {
@@ -363,6 +385,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			setObservedPlate(vehicle.plate_number);
 			notifySuccess(`Đã cấp thẻ khách UID ${card.uid} cho xe ${vehicle.plate_number}`);
 			await processEntry(latestEntryCorrelationId || undefined);
+			clearOperatorInputs('guest');
 		} catch (issueError) {
 			notifyError(issueError instanceof Error ? issueError.message : 'Cấp thẻ khách thất bại');
 		} finally {
@@ -401,7 +424,8 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			});
 
 			notifySuccess(`Đã thu phí vãng lai: ${due.toLocaleString('vi-VN')} VND`);
-			void loadParkingSlots();
+		clearOperatorInputs('payment');
+		void loadParkingSlots();
 		} catch (paymentError) {
 			notifyError(paymentError instanceof Error ? paymentError.message : 'Thu phí thất bại');
 		} finally {
@@ -619,7 +643,6 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 				<section className="panel operator-plate-panel">
 					<header className="panel-head">
 						<h2>Hình ảnh biển số xe</h2>
-						<p>Nửa màn hình bên phải hiển thị vùng ảnh biển số từ dữ liệu realtime.</p>
 					</header>
 
 					<div className="plate-preview-stage plate-preview-grid">
@@ -627,7 +650,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 							<p className="plate-preview-head">CAMERA ENTRY</p>
 							<div className="plate-preview-center">
 								<div className="plate-visual-number">
-									{observedPlate || latestDetectedPlate || 'CHUA NHAN DIEN'}
+									{observedPlate || latestDetectedPlate || 'Chưa có xe vào'}
 								</div>
 							</div>
 							<p className="plate-preview-meta">
@@ -638,20 +661,10 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 							<p className="plate-preview-head">CAMERA EXIT</p>
 							<div className="plate-preview-center">
 								<div className="plate-visual-number plate-visual-number-exit">
-									{latestExitDetectedPlate || 'CHUA CO XE RA'}
+									{latestExitDetectedPlate || 'Chưa có xe ra'}
 								</div>
 							</div>
 							<p className="plate-preview-meta">Detected: {latestExitDetectedPlate || '-'}</p>
-							<div className="button-row">
-								<button
-									type="button"
-									className="btn btn-secondary"
-									onClick={() => setPaymentExitPlate(latestExitDetectedPlate)}
-									disabled={!latestExitDetectedPlate}
-								>
-									Lấy biển số exit
-								</button>
-							</div>
 						</div>
 					</div>
 				</section>

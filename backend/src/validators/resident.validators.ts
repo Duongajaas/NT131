@@ -5,14 +5,14 @@ const mongoObjectIdPattern = /^[0-9a-fA-F]{24}$/;
 
 const createResidentSchema = Joi.object({
 	full_name: Joi.string().max(100).required(),
-	phone: Joi.string().max(20).optional(),
+	phone: Joi.string().max(10).optional(),
 	apartment_no: Joi.string().max(20).required(),
 	is_active: Joi.boolean().optional()
 });
 
 const updateResidentSchema = Joi.object({
 	full_name: Joi.string().max(100).optional(),
-	phone: Joi.string().max(20).optional().allow(null),
+	phone: Joi.string().max(10).optional().allow(null),
 	apartment_no: Joi.string().max(20).optional(),
 	is_active: Joi.boolean().optional()
 }).or('full_name', 'phone', 'apartment_no', 'is_active');

@@ -82,8 +82,8 @@ src
 ```mermaid
 flowchart LR
 U[User] --> UI[Simulator Panel]
-UI -->|Create and hydrate data| API1[/api/v1/vehicles and parking resources]
-UI -->|Assign slot and exit| API2[/api/v1/parking/sessions and slots]
+UI -->|Create and hydrate data| API1["/api/v1/vehicles and parking resources"]
+UI -->|Assign slot and exit| API2["/api/v1/parking/sessions and slots"]
 UI -->|Emit checkpoint| SC[socket event simulator.vehicle.checkpoint]
 SC --> BE[Backend Socket Server]
 BE --> G[gate.state.changed]

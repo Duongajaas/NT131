@@ -74,5 +74,11 @@ export default defineConfig({
 				manualChunks: getManualChunk
 			}
 		}
+	},
+	define: {
+		// Suppress Three.js deprecated warnings in development
+		...(process.env.NODE_ENV === 'development' && {
+			'console.warn': '((...args) => { if (!args[0]?.includes?.("THREE.Clock") && !args[0]?.includes?.("PCFSoftShadowMap")) console.warn(...args); })'
+		})
 	}
 });

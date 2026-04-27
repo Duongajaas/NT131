@@ -12,7 +12,6 @@ import type {
 	RfidCardRecord,
 	TransactionRecord
 } from '../types/contracts';
-import { StatusCard } from './status-card';
 
 interface AdminDashboardProps {
 	token: string;
@@ -289,16 +288,65 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 
 	return (
 		<section className="page-grid">
-			<section className="grid stats-grid">
-				<StatusCard label="Số cư dân" value={residents.length} description="Tổng cư dân trong hệ thống" />
-				<StatusCard label="Cư dân active" value={activeResidents} description="Đang hoạt động" tone="good" />
-				<StatusCard label="Thẻ tháng" value={monthlyCards.length} description="RFID monthly card" />
-				<StatusCard
-					label="Doanh thu đã thu"
-					value={`${totalRevenue.toLocaleString('vi-VN')} VND`}
-					description={`Paid transactions: ${paidTransactions}`}
-					tone="good"
-				/>
+			{/* Analytics Dashboard */}
+			<section className="panel">
+				<header className="panel-head">
+					<h2>Tổng quan hệ thống</h2>
+					<p>Thống kê tổng hợp về hoạt động bãi xe</p>
+				</header>
+
+				<div className="analytics-grid">
+					<div className="analytics-card">
+						<div className="analytics-metric">
+							<span className="analytics-value">{residents.length}</span>
+							<span className="analytics-label">Tổng cư dân</span>
+						</div>
+						<div className="analytics-chart">
+							<div className="chart-bar" style={{ height: `${Math.min(residents.length * 10, 100)}%` }}></div>
+						</div>
+					</div>
+
+					<div className="analytics-card">
+						<div className="analytics-metric">
+							<span className="analytics-value">{activeResidents}</span>
+							<span className="analytics-label">Cư dân active</span>
+						</div>
+						<div className="analytics-chart">
+							<div className="chart-bar chart-bar-good" style={{ height: `${Math.min(activeResidents * 15, 100)}%` }}></div>
+						</div>
+					</div>
+
+					<div className="analytics-card">
+						<div className="analytics-metric">
+							<span className="analytics-value">{monthlyCards.length}</span>
+							<span className="analytics-label">Thẻ tháng</span>
+						</div>
+						<div className="analytics-chart">
+							<div className="chart-bar" style={{ height: `${Math.min(monthlyCards.length * 8, 100)}%` }}></div>
+						</div>
+					</div>
+
+					<div className="analytics-card">
+						<div className="analytics-metric">
+							<span className="analytics-value">{totalRevenue.toLocaleString('vi-VN')}</span>
+							<span className="analytics-label">Doanh thu (VND)</span>
+						</div>
+						<div className="analytics-chart">
+							<div className="chart-bar chart-bar-good" style={{ height: `${Math.min(paidTransactions * 5, 100)}%` }}></div>
+						</div>
+					</div>
+				</div>
+
+				<div className="analytics-summary">
+					<div className="summary-item">
+						<span className="summary-label">Tổng giao dịch đã thanh toán:</span>
+						<span className="summary-value">{paidTransactions}</span>
+					</div>
+					<div className="summary-item">
+						<span className="summary-label">Tỷ lệ cư dân active:</span>
+						<span className="summary-value">{residents.length > 0 ? Math.round((activeResidents / residents.length) * 100) : 0}%</span>
+					</div>
+				</div>
 			</section>
 
 			<section className="grid admin-main-layout">

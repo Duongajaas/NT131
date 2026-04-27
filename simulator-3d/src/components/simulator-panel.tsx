@@ -17,6 +17,7 @@ import {
 	listParkingSessions,
 	listParkingSlots
 } from '../lib/api';
+import { LoadingOverlay } from './loading-overlay';
 
 const ParkingScene3D = lazy(() => import('./parking-scene-3d'));
 
@@ -55,12 +56,15 @@ interface SessionWaiter {
 	timerId: number;
 }
 
+type VehicleType = 'motorbike' | 'car';
+
 interface ParkedVehicle {
 	localId: string;
 	sessionId: string;
 	plateNumber: string;
 	dbSlotCode: string;
 	sceneSlotId: SceneSlotId;
+	vehicleType: VehicleType;
 }
 
 const SCENE_SLOT_IDS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
@@ -86,6 +90,15 @@ const GATE_WAIT_TIMEOUT_MS = 15000;
 const SESSION_WAIT_TIMEOUT_MS = 20000;
 const isGateOpenState = (state?: string) => state === 'opening' || state === 'open';
 
+const MIN_LOADING_DURATION_MS = 2200;
+
+const keepSpinnerVisible = async (startedAt: number) => {
+	const elapsed = Date.now() - startedAt;
+	if (elapsed < MIN_LOADING_DURATION_MS) {
+		await wait(MIN_LOADING_DURATION_MS - elapsed);
+	}
+};
+
 const normalizePlateNumber = (value: string) => value.trim().toUpperCase();
 
 const chooseSceneSlotId = (
@@ -102,6 +115,7 @@ const chooseSceneSlotId = (
 
 export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 	const [plateNumber, setPlateNumber] = useState('');
+	const [vehicleType, setVehicleType] = useState<VehicleType>('car');
 	const [sessionId, setSessionId] = useState('');
 	const [slotId, setSlotId] = useState('');
 	const [dbSlotCode, setDbSlotCode] = useState('');
@@ -118,14 +132,40 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 	const hasJoinedSimulatorRoomRef = useRef(false);
 	const entryGateOpenRef = useRef(false);
 	const exitGateOpenRef = useRef(false);
+	const busyRef = useRef(false);
+	const hydratingRef = useRef(false);
+	const activeVehicleRef = useRef<ParkedVehicle | null>(null);
+	const parkedVehiclesRef = useRef<ParkedVehicle[]>([]);
+	const slotIdRef = useRef('');
 	const activeCorrelationIdRef = useRef('');
 	const sessionWaitersRef = useRef<SessionWaiter[]>([]);
+	const createdSessionsByCorrelationRef = useRef<Map<string, string>>(new Map());
 	const gateWaitersRef = useRef<Record<GateId, GateWaiter[]>>({
 		'entry-gate': [],
 		'exit-gate': []
 	});
 
 	const stageLabel = useMemo(() => STAGE_LABELS[stage], [stage]);
+
+	useEffect(() => {
+		busyRef.current = busy;
+	}, [busy]);
+
+	useEffect(() => {
+		hydratingRef.current = hydrating;
+	}, [hydrating]);
+
+	useEffect(() => {
+		activeVehicleRef.current = activeVehicle;
+	}, [activeVehicle]);
+
+	useEffect(() => {
+		parkedVehiclesRef.current = parkedVehicles;
+	}, [parkedVehicles]);
+
+	useEffect(() => {
+		slotIdRef.current = slotId;
+	}, [slotId]);
 
 	const isRealtimeGateSyncActive = () =>
 		Boolean(simulatorSocketRef.current?.connected && hasJoinedSimulatorRoomRef.current);
@@ -147,6 +187,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 	const resolveSessionWaiters = (correlationId: string, sessionIdValue: string) => {
 		const waiters = sessionWaitersRef.current.filter((waiter) => waiter.correlationId === correlationId);
 		if (waiters.length === 0) {
+			createdSessionsByCorrelationRef.current.set(correlationId, sessionIdValue);
 			return;
 		}
 
@@ -201,6 +242,12 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			return Promise.reject(new Error('Missing correlation id for session wait'));
 		}
 
+		const preCreatedSessionId = createdSessionsByCorrelationRef.current.get(correlationId);
+		if (preCreatedSessionId) {
+			createdSessionsByCorrelationRef.current.delete(correlationId);
+			return Promise.resolve(preCreatedSessionId);
+		}
+
 		return new Promise<string>((resolve, reject) => {
 			const timerId = window.setTimeout(() => {
 				sessionWaitersRef.current = sessionWaitersRef.current.filter(
@@ -238,6 +285,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			return;
 		}
 
+		const startedAt = Date.now();
 		setHydrating(true);
 		try {
 			const [occupiedSlots, parkedSessions] = await Promise.all([
@@ -277,13 +325,16 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 
 						const plateNumberValue =
 							(session.entry_plate_text || vehicle.plate_number).trim().toUpperCase();
+						const vehicleTypeValue: VehicleType =
+							vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
 
 						return {
 							localId: session._id,
 							sessionId: session._id,
 							plateNumber: plateNumberValue,
 							dbSlotCode: slot.slot_code,
-							sceneSlotId
+							sceneSlotId,
+							vehicleType: vehicleTypeValue
 						};
 					} catch (error) {
 						pushLog(
@@ -302,6 +353,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			setParkedVehicles(nextParkedVehicles);
 			setActiveVehicle(null);
 			activeCorrelationIdRef.current = '';
+			createdSessionsByCorrelationRef.current.clear();
 
 			if (nextParkedVehicles.length > 0) {
 				setStage('parked');
@@ -322,6 +374,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 				error instanceof Error ? error.message : 'Unable to load parked vehicles from database'
 			);
 		} finally {
+			await keepSpinnerVisible(startedAt);
 			setHydrating(false);
 		}
 	};
@@ -361,7 +414,14 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		const unsubscribeRealtime = subscribeRealtime(socket, (event) => {
 			if (event.eventName === 'session.created') {
 				const createdSessionId = typeof event.sessionId === 'string' ? event.sessionId : undefined;
+				const sessionStatus = typeof event.payload?.status === 'string' ? event.payload.status : undefined;
+				const vehicleId = typeof event.payload?.vehicleId === 'string' ? event.payload.vehicleId : undefined;
 				if (event.correlationId === activeCorrelationIdRef.current && createdSessionId) {
+					if (sessionStatus === 'approved_entry') {
+						applyGateState('entry-gate', 'open');
+						pushLog('Barrier opened', 'Entry gate opened from approved session event');
+					}
+
 					setSessionId(createdSessionId);
 					setActiveVehicle((current) =>
 						current
@@ -373,6 +433,19 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 						);
 					resolveSessionWaiters(event.correlationId, createdSessionId);
 					pushLog('Session synced', `Backend created session ${createdSessionId}`);
+					return;
+				}
+
+				if (
+					sessionStatus === 'approved_entry' &&
+					createdSessionId &&
+					vehicleId &&
+					!busyRef.current &&
+					!hydratingRef.current &&
+					!activeVehicleRef.current
+				) {
+					pushLog('Operator entry detected', `Processing approved entry for session ${createdSessionId} (correlation: ${event.correlationId})`);
+					void runOperatorApprovedEntryFlow(createdSessionId, vehicleId, event.correlationId);
 				}
 
 				return;
@@ -449,6 +522,150 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		]);
 	};
 
+	const clearInputFields = () => {
+		setPlateNumber('');
+		setSessionId('');
+		setSlotId('');
+	};
+
+	const finalizeEntryJourney = async (
+		sessionIdValue: string,
+		correlationIdValue: string,
+		plateNumberValue: string,
+		selectedSceneSlotId: SceneSlotId,
+		vehicleTypeValue: VehicleType
+	) => {
+		setSessionId(sessionIdValue);
+		setActiveVehicle((current) =>
+			current
+				? {
+					...current,
+					sessionId: sessionIdValue
+				}
+				: {
+					localId: correlationIdValue,
+					sessionId: sessionIdValue,
+					plateNumber: plateNumberValue,
+					dbSlotCode: '',
+					sceneSlotId: selectedSceneSlotId,
+					vehicleType: vehicleTypeValue
+				}
+		);
+		onSessionCreated(sessionIdValue, plateNumberValue);
+
+		const slotResult = await assignParkingSlot(
+			sessionIdValue,
+			{
+				correlation_id: correlationIdValue
+			},
+			getSimulatorApiKey()
+		);
+
+		setDbSlotCode(slotResult.slot.slot_code);
+		setActiveVehicle((current) =>
+			current
+				? {
+					...current,
+					dbSlotCode: slotResult.slot.slot_code
+				}
+				: current
+		);
+		pushLog('Slot assigned', `Real DB slot ${slotResult.slot.slot_code} reserved for session ${sessionIdValue}`);
+		setResult(`Database slot assigned: ${slotResult.slot.slot_code}`);
+
+		setStage('entry_processing');
+		pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
+		await wait(STAGE_TRAVEL_MS);
+		setStage('assigned_slot');
+		pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
+		await wait(STAGE_TRAVEL_MS);
+		setStage('parked');
+		setParkedVehicles((current) => [
+			...current,
+			{
+				localId: correlationIdValue,
+				sessionId: sessionIdValue,
+				plateNumber: plateNumberValue,
+				dbSlotCode: slotResult.slot.slot_code,
+				sceneSlotId: selectedSceneSlotId,
+				vehicleType: vehicleTypeValue
+			}
+		]);
+		setActiveVehicle(null);
+		pushLog('Vehicle parked', `Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+		setResult(`Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+		clearInputFields();
+	};
+
+	const runOperatorApprovedEntryFlow = async (
+		sessionIdValue: string,
+		vehicleId: string,
+		correlationIdValue: string
+	) => {
+
+		const occupiedSlots = new Set(parkedVehiclesRef.current.map((vehicle) => vehicle.sceneSlotId));
+		const selectedSceneSlotId = chooseSceneSlotId(occupiedSlots, Number.parseInt(slotIdRef.current, 10));
+		if (!selectedSceneSlotId) {
+			setResult('Bãi mô phỏng đã đầy, không còn slot trống');
+			pushLog('Entry blocked', 'No free scene slot available for operator-created session');
+			return;
+		}
+
+		busyRef.current = true;
+		setBusy(true);
+		try {
+			const apiKey = getSimulatorApiKey();
+			const vehicle = await getVehicleById(vehicleId, apiKey);
+			const nextPlateNumber = normalizePlateNumber(vehicle.plate_number);
+			const nextVehicleType: VehicleType = vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
+			const normalizedCorrelationId = correlationIdValue || crypto.randomUUID();
+
+			activeCorrelationIdRef.current = normalizedCorrelationId;
+			setPlateNumber(nextPlateNumber);
+			setVehicleType(nextVehicleType);
+			setSessionId(sessionIdValue);
+			setStage('approaching_entry');
+			setActiveVehicle({
+				localId: normalizedCorrelationId,
+				sessionId: sessionIdValue,
+				plateNumber: nextPlateNumber,
+				dbSlotCode: '',
+				sceneSlotId: selectedSceneSlotId,
+				vehicleType: nextVehicleType
+			});
+			setResult('Vehicle spawned from operator-approved entry');
+			pushLog('Vehicle spawned', `${nextPlateNumber} -> session ${sessionIdValue}`);
+
+			await wait(STAGE_TRAVEL_MS);
+			setStage('waiting_rfid');
+			pushLog('Vehicle stopped', 'Vehicle reached entry checkpoint after operator approval');
+			await notifyCheckpoint('entry_rfid', nextPlateNumber, sessionIdValue, normalizedCorrelationId);
+
+			applyGateState('entry-gate', 'open');
+			pushLog('Barrier opened', 'Entry gate already approved by backend, continuing drive-in');
+
+			await wait(STAGE_SHORT_HOLD_MS);
+			setStage('entry_processing');
+			pushLog('Vehicle proceeding', 'Monthly card approved - vehicle proceeding through open gate');
+			await finalizeEntryJourney(
+				sessionIdValue,
+				normalizedCorrelationId,
+				nextPlateNumber,
+				selectedSceneSlotId,
+				nextVehicleType
+			);
+		} catch (error) {
+			setResult(error instanceof Error ? error.message : 'Operator-driven entry simulation failed');
+			pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
+			setActiveVehicle(null);
+			setDbSlotCode('');
+			setStage('idle');
+		} finally {
+			busyRef.current = false;
+			setBusy(false);
+		}
+	};
+
 	const notifyCheckpoint = async (
 		checkpoint: 'entry_rfid' | 'exit_rfid',
 		plateNumberValue: string,
@@ -498,6 +715,8 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		setBusy(true);
 		setStage('approaching_entry');
 		const nextPlateNumber = normalizePlateNumber(plateNumber) || generateVehiclePlateNumber();
+		const selectedVehicleType = vehicleType;
+		let persistedVehicleType: VehicleType = selectedVehicleType;
 		const correlationId = crypto.randomUUID();
 		activeCorrelationIdRef.current = correlationId;
 		setPlateNumber(nextPlateNumber);
@@ -506,15 +725,25 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			sessionId: '',
 			plateNumber: nextPlateNumber,
 			dbSlotCode: '',
-			sceneSlotId: selectedSceneSlotId
+			sceneSlotId: selectedSceneSlotId,
+			vehicleType: selectedVehicleType
 		});
 		setResult('Vehicle spawned and waiting for RFID scan');
 		pushLog('Vehicle spawned', `${nextPlateNumber} -> scene slot ${selectedSceneSlotId}`);
 		try {
 			const vehicle = await createSimulatorVehicle({
 				plateNumber: nextPlateNumber,
-				vehicleType: 'car'
+				vehicleType: selectedVehicleType
 			});
+			persistedVehicleType = vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
+			setActiveVehicle((current) =>
+				current
+					? {
+						...current,
+						vehicleType: persistedVehicleType
+					}
+					: current
+			);
 			pushLog('Vehicle persisted', `Vehicle ${vehicle._id} ready for operator RFID flow`);
 		} catch (error) {
 			setResult(error instanceof Error ? error.message : 'Failed to create vehicle record');
@@ -593,12 +822,14 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 					sessionId: createdSessionId,
 					plateNumber: nextPlateNumber,
 					dbSlotCode: slotResult.slot.slot_code,
-					sceneSlotId: selectedSceneSlotId
+					sceneSlotId: selectedSceneSlotId,
+					vehicleType: persistedVehicleType
 				}
 			]);
 			setActiveVehicle(null);
 			pushLog('Vehicle parked', `Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
 			setResult(`Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+			clearInputFields();
 		} catch (error) {
 			setResult(error instanceof Error ? error.message : 'Entry simulation failed');
 			pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
@@ -671,6 +902,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			setStage(remainingVehicles.length > 0 ? 'parked' : 'completed');
 			setActiveVehicle(null);
 			pushLog('Simulation completed', 'Vehicle exited and slot released');
+			clearInputFields();
 		} catch (error) {
 			setResult(error instanceof Error ? error.message : 'Exit simulation failed');
 			pushLog('Exit error', error instanceof Error ? error.message : 'Unknown error');
@@ -782,6 +1014,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		setLog([]);
 		setResult('Ready');
 		activeCorrelationIdRef.current = '';
+		createdSessionsByCorrelationRef.current.clear();
 		setSlotId('');
 		setPlateNumber('');
 	};
@@ -809,6 +1042,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 						<ParkingScene3D
 							stage={stage}
 							activePlateNumber={activeVehicle?.plateNumber || ''}
+							activeVehicleType={activeVehicle?.vehicleType || vehicleType}
 							activeSceneSlotId={activeVehicle ? String(activeVehicle.sceneSlotId) : ''}
 							parkedVehicles={parkedVehicles}
 							entryGateOpen={entryGateOpen}
@@ -849,6 +1083,17 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 								placeholder="Nhập biển số hoặc để trống để tự sinh"
 							/>
 						</label>
+						<label className="field">
+							<span>Vehicle Type</span>
+							<select
+								value={vehicleType}
+								onChange={(event) => setVehicleType(event.target.value as VehicleType)}
+								disabled={busy || hydrating}
+							>
+								<option value="car">Car</option>
+								<option value="motorbike">Motorbike</option>
+							</select>
+						</label>
 					</div>
 
 					<div className="field-row">
@@ -868,10 +1113,24 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 
 					<div className="button-row">
 						<button onClick={simulateEntry} disabled={busy || hydrating}>
-							{busy ? 'Running...' : 'Simulate Entry'}
+							{busy ? (
+								<>
+									<span className="loading-spinner loading-spinner-inline" aria-hidden="true" />
+									Running...
+								</>
+							) : (
+								'Simulate Entry'
+							)}
 						</button>
 						<button onClick={handleManualExit} disabled={busy || hydrating || parkedVehicles.length === 0}>
-							{busy ? 'Running...' : 'Simulate Exit'}
+							{busy ? (
+								<>
+									<span className="loading-spinner loading-spinner-inline" aria-hidden="true" />
+									Running...
+								</>
+							) : (
+								'Simulate Exit'
+							)}
 						</button>
 						<button onClick={reset} disabled={busy || hydrating}>
 							Reset
@@ -902,6 +1161,14 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 					</div>
 				</aside>
 			</div>
+
+			{hydrating ? (
+				<LoadingOverlay
+					className="loading-overlay-fixed"
+					title="Đang đồng bộ dữ liệu simulator"
+					description="Hệ thống đang tải lại danh sách xe và slot trong vài giây."
+				/>
+			) : null}
 		</section>
 	);
 };

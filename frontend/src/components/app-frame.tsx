@@ -6,22 +6,29 @@ interface AppFrameProps {
 	username: string;
 	onLogout: () => void;
 	children: ReactNode;
+	title?: string;
 }
 
-export const AppFrame = ({ role, username, onLogout, children }: AppFrameProps) => {
+export const AppFrame = ({ role, username, onLogout, children, title }: AppFrameProps) => {
+	const getTitle = () => {
+		if (title) return title;
+		return role === 'admin' ? 'Admin Dashboard' : 'Operator Dashboard';
+	};
+
 	return (
-		<div className="frame-root">
-			<header className="frame-header">
-				<div className="frame-user-summary">
-					<p className="frame-user-role">{role.toUpperCase()}</p>
-					<p className="frame-user-name">{username}</p>
+		<div className="dashboard-root">
+			<header className="dashboard-header">
+				<h1 className="dashboard-title">{getTitle()}</h1>
+				<div className="dashboard-user-info">
+					<p className="dashboard-user-role">{role.toUpperCase()}</p>
+					<p className="dashboard-user-name">{username}</p>
+					<button type="button" className="btn btn-secondary" onClick={onLogout}>
+						Đăng xuất
+					</button>
 				</div>
-				<button type="button" className="btn btn-secondary" onClick={onLogout}>
-					Đăng xuất
-				</button>
 			</header>
 
-			<main className="frame-content">{children}</main>
+			<main className="dashboard-main">{children}</main>
 		</div>
 	);
 };

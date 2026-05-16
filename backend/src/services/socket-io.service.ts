@@ -68,6 +68,12 @@ const validateSimulatorKey = (key?: string) => {
 	return key === expected;
 };
 
+const isHardwareHandshake = (socket: Socket) => {
+	const clientType = socket.handshake.auth?.clientType ?? socket.handshake.query?.clientType;
+	const headerClientType = socket.handshake.headers['x-client-type'];
+	return clientType === 'hardware' || clientType === 'esp32' || headerClientType === 'hardware' || headerClientType === 'esp32';
+};
+
 const isSupportedGateId = (gateId: string): gateId is (typeof SUPPORTED_GATE_IDS)[number] => {
 	return SUPPORTED_GATE_IDS.includes(gateId as (typeof SUPPORTED_GATE_IDS)[number]);
 };
@@ -237,6 +243,7 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 	ioServer = new Server(httpServer, {
 		path: '/socket.io',
 		allowEIO3: true,
+		transports: ['websocket', 'polling'],
 		cors: {
 			origin: corsOrigin === '*' ? '*' : corsOrigin.split(',').map((item) => item.trim()),
 			credentials: true
@@ -244,13 +251,23 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 	});
 
 	logger.info('Socket.IO server initialized', {
-		path: '/socket.io',
+		path: '/socket.io/',
 		corsOrigin
+	});
+
+	ioServer.engine.on('connection_error', (err) => {
+		logger.error('Socket.IO engine connection error', {
+			code: err.code,
+			message: err.message,
+			context: err.context,
+			transport: err.req?.headers?.upgrade ?? null,
+			url: err.req?.url ?? null
+		});
 	});
 
 	ioServer.use(async (socket, next) => {
 		const token = getSocketToken(socket);
-		console.log('Socket authentication attempt', {token: token ? '***' : null, socketId: socket.id});
+		// console.log('Socket authentication attempt', { token: token ? '***' : null, socketId: socket.id });
 		if (!token) {
 			return next();
 		}
@@ -284,8 +301,30 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 	ioServer.on('connection', (socket) => {
 		logger.info('Socket connected', {
 			socketId: socket.id,
-			authenticated: Boolean(socket.data.user)
+			authenticated: Boolean(socket.data.user),
+			transport: socket.conn.transport.name
 		});
+
+		// Debug handshake details to verify clientType query/header
+		logger.debug('Socket handshake details', {
+			socketId: socket.id,
+			query: socket.handshake.query,
+			headers: {
+				origin: socket.handshake.headers.origin,
+				referer: socket.handshake.headers.referer,
+				'x-client-type': socket.handshake.headers['x-client-type'] || null
+			}
+		});
+
+		if (isHardwareHandshake(socket)) {
+			socket.join('hardware');
+			hardwareGateway.markHardwareConnected(socket.id);
+
+			logger.info('Hardware socket connected', {
+				socketId: socket.id,
+				transport: socket.conn.transport.name
+			});
+		}
 
 		// Debug: Log all events
 		socket.onAny((event, ...args) => {
@@ -305,6 +344,13 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 			});
 		});
 
+		socket.on('error', (err) => {
+			logger.error('Socket error during event processing', {
+				socketId: socket.id,
+				error: err instanceof Error ? err.message : String(err)
+			});
+		});
+
 		socket.on('disconnect', (reason) => {
 			if (socket.rooms.has('simulator') || socket.rooms.has('hardware')) {
 				hardwareGateway.markHardwareDisconnected(socket.id);
@@ -314,9 +360,11 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 				socketId: socket.id,
 				reason,
 				rooms: Array.from(socket.rooms),
-				user: socket.data.user ?? null
+				user: socket.data.user ?? null,
+				transport: socket.conn.transport.name
 			});
 		});
+
 
 		socket.on('operator.join', (_payload, ack?: (value: unknown) => void) => {
 			if (!socket.data.user) {

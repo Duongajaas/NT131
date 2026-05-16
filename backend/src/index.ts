@@ -22,7 +22,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const httpServer = createServer(app);
-const allowedCorsOrigins = ['http://localhost:5173', 'http://localhost:5174'];
+const allowedCorsOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://192.168.1.5'];
 
 const listenForServer = (server: typeof httpServer, port: string | number) => {
 	return new Promise<void>((resolve, reject) => {

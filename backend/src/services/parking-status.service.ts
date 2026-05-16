@@ -4,7 +4,7 @@ import {
 	getRevenueSummary,
 	listTransactions
 } from '../repositories/transaction.repository.ts';
-import hardwareGatewayMock from './hardware-gateway.mock.service.ts';
+import hardwareGateway from './hardware-gateway.service.ts';
 
 interface RevenueReportInput {
 	from_date?: Date;
@@ -28,8 +28,8 @@ export const getOverview = async () => {
 			listActiveSessions(),
 			listParkingSessions({ status: 'blocked' }),
 			listParkingSessions({ status: 'parked' }),
-			hardwareGatewayMock.getGateState('entry-gate'),
-			hardwareGatewayMock.getGateState('exit-gate')
+			hardwareGateway.getGateState('entry-gate'),
+			hardwareGateway.getGateState('exit-gate')
 		]);
 
 	return {
@@ -56,9 +56,9 @@ export const getSlots = async (input: {
 
 export const getGateStatus = async () => {
 	const [entryGate, exitGate, health] = await Promise.all([
-		hardwareGatewayMock.getGateState('entry-gate'),
-		hardwareGatewayMock.getGateState('exit-gate'),
-		hardwareGatewayMock.ping()
+		hardwareGateway.getGateState('entry-gate'),
+		hardwareGateway.getGateState('exit-gate'),
+		hardwareGateway.ping()
 	]);
 
 	return {
@@ -69,7 +69,7 @@ export const getGateStatus = async () => {
 };
 
 export const getGateCommandLogs = async (limit?: number) => {
-	return hardwareGatewayMock.listCommandLogs(limit);
+	return hardwareGateway.listCommandLogs(limit);
 };
 
 export const getRevenueReport = async (input: RevenueReportInput) => {

@@ -1,5 +1,6 @@
 import express from 'express';
 import authRouter from './auth.routes.ts';
+import hardwareRouter from './hardware.routes.ts';
 import parkingSessionRouter from './parking-session.routes.ts';
 import parkingSlotRouter from './parking-slot.routes.ts';
 import parkingStatusRouter from './parking-status.routes.ts';
@@ -14,6 +15,7 @@ apiRouter.get('/', (req, res) => {
     res.status(200).json({ message: 'Welcome to the API!' });
 });
 apiRouter.use('/auth', authRouter);
+apiRouter.use('/hardware', hardwareRouter);
 apiRouter.use('/residents', residentRouter);
 apiRouter.use('/rfid-cards', rfidCardRouter);
 apiRouter.use('/vehicles', vehicleRouter);

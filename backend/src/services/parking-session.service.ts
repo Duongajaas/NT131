@@ -24,7 +24,7 @@ import {
 } from '../repositories/rfid-card.repository.ts';
 import { createTransaction, findTransactionBySessionId } from '../repositories/transaction.repository.ts';
 import { findVehicleById } from '../repositories/vehicle.repository.ts';
-import hardwareGatewayMock from './hardware-gateway.mock.service.ts';
+import hardwareGateway from './hardware-gateway.service.ts';
 import { publishRealtimeEvent } from './realtime-event-bus.service.ts';
 import AppError from '../utills/app-error.ts';
 
@@ -155,7 +155,7 @@ export const createEntrySession = async (input: EntryInput) => {
 			}
 		});
 	} else {
-		const gateCommand = await hardwareGatewayMock.openGate('entry-gate', {
+		const gateCommand = await hardwareGateway.openGate('entry-gate', {
 			commandId: randomUUID(),
 			sessionId: session._id.toString(),
 			correlationId: input.correlation_id,
@@ -341,7 +341,7 @@ export const approveBlockedSession = async (sessionId: string, correlationId?: s
 		throw new AppError('Failed to approve parking session', 500);
 	}
 
-	const gateCommand = await hardwareGatewayMock.openGate('entry-gate', {
+	const gateCommand = await hardwareGateway.openGate('entry-gate', {
 		commandId: randomUUID(),
 		sessionId,
 		correlationId: correlationId,
@@ -564,7 +564,7 @@ export const completeExitSession = async (input: ExitInput) => {
 	});
 
 	if (!plateMismatch) {
-		const gateCommand = await hardwareGatewayMock.openGate('exit-gate', {
+		const gateCommand = await hardwareGateway.openGate('exit-gate', {
 			commandId: randomUUID(),
 			sessionId: input.session_id,
 			correlationId: input.correlation_id,

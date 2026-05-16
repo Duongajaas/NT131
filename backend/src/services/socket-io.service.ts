@@ -5,7 +5,7 @@ import { findUserById } from '../repositories/user.repository.ts';
 import { verifyToken, type JwtPayload } from '../utills/password.ts';
 import logger from '../utills/logger.ts';
 import { onRealtimeEvent, publishRealtimeEvent } from './realtime-event-bus.service.ts';
-import hardwareGatewayMock from './hardware-gateway.mock.service.ts';
+import hardwareGateway from './hardware-gateway.service.ts';
 import type { GateCommand, GateCommandLog } from '../types/hardware-gateway.ts';
 
 interface GateCommandRequestPayload {
@@ -23,7 +23,7 @@ interface SimulatorCheckpointPayload {
 	sessionId?: string;
 }
 
-type JoinedRoom = 'operator' | 'simulator';
+type JoinedRoom = 'operator' | 'simulator' | 'hardware';
 type GateCommandSource = Exclude<GateCommand['requestedBy'], 'backend'>;
 
 const SUPPORTED_GATE_IDS = ['entry-gate', 'exit-gate'] as const;
@@ -169,8 +169,8 @@ const executeGateCommand = async ({
 	try {
 		const gateLog =
 			payload.command === 'open'
-				? await hardwareGatewayMock.openGate(payload.gateId, gateCommand)
-				: await hardwareGatewayMock.closeGate(payload.gateId, gateCommand);
+				? await hardwareGateway.openGate(payload.gateId, gateCommand)
+				: await hardwareGateway.closeGate(payload.gateId, gateCommand);
 
 		publishGateCommandEvents(source, { ...payload, correlationId }, gateLog);
 
@@ -221,8 +221,10 @@ const bridgeRealtimeEventToRooms = () => {
 
 		ioServer.to('operator').emit('realtime.event', event);
 		ioServer.to('simulator').emit('realtime.event', event);
+		ioServer.to('hardware').emit('realtime.event', event);
 		ioServer.to('operator').emit(event.eventName, event);
 		ioServer.to('simulator').emit(event.eventName, event);
+		ioServer.to('hardware').emit(event.eventName, event);
 	});
 };
 
@@ -234,6 +236,7 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 	const corsOrigin = process.env.SOCKET_CORS_ORIGIN ?? '*';
 	ioServer = new Server(httpServer, {
 		path: '/socket.io',
+		allowEIO3: true,
 		cors: {
 			origin: corsOrigin === '*' ? '*' : corsOrigin.split(',').map((item) => item.trim()),
 			credentials: true
@@ -247,6 +250,7 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 
 	ioServer.use(async (socket, next) => {
 		const token = getSocketToken(socket);
+		console.log('Socket authentication attempt', {token: token ? '***' : null, socketId: socket.id});
 		if (!token) {
 			return next();
 		}
@@ -283,10 +287,34 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 			authenticated: Boolean(socket.data.user)
 		});
 
+		// Debug: Log all events
+		socket.onAny((event, ...args) => {
+			logger.debug(`[DEBUG] Socket event: ${event}`, {
+				socketId: socket.id,
+				event,
+				argsCount: args.length,
+				firstArgType: args[0] ? typeof args[0] : 'undefined'
+			});
+		});
+
+		// Debug: Log errors
+		socket.on('error', (err) => {
+			logger.error('Socket error', {
+				socketId: socket.id,
+				error: err instanceof Error ? err.message : String(err)
+			});
+		});
+
 		socket.on('disconnect', (reason) => {
+			if (socket.rooms.has('simulator') || socket.rooms.has('hardware')) {
+				hardwareGateway.markHardwareDisconnected(socket.id);
+			}
+
 			logger.info('Socket disconnected', {
 				socketId: socket.id,
-				reason
+				reason,
+				rooms: Array.from(socket.rooms),
+				user: socket.data.user ?? null
 			});
 		});
 
@@ -322,23 +350,56 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 		socket.on(
 			'simulator.join',
 			(payload: { apiKey?: string } | undefined, ack?: (value: unknown) => void) => {
-				if (!validateSimulatorKey(payload?.apiKey)) {
-					logger.warn('Simulator room join rejected', {
+				try {
+					logger.debug('Simulator join payload received', {
 						socketId: socket.id,
-						reason: 'Invalid simulator key'
+						payload
 					});
-					ack?.({ success: false, message: 'Invalid simulator key' });
-					return;
-				}
 
-				socket.join('simulator');
-				logger.debug('Simulator room joined', {
-					socketId: socket.id,
-					apiKeyProvided: Boolean(payload?.apiKey)
-				});
-				ack?.({ success: true, room: 'simulator' as JoinedRoom });
+					if (!validateSimulatorKey(payload?.apiKey)) {
+						logger.warn('Simulator room join rejected', {
+							socketId: socket.id,
+							reason: 'Invalid simulator key',
+							providedApiKey: payload?.apiKey
+						});
+						ack?.({ success: false, message: 'Invalid simulator key' });
+						return;
+					}
+
+					socket.join('simulator');
+					hardwareGateway.markHardwareConnected(socket.id);
+					logger.debug('Simulator room joined', {
+						socketId: socket.id,
+						apiKeyProvided: Boolean(payload?.apiKey)
+					});
+					ack?.({ success: true, room: 'simulator' as JoinedRoom });
+				} catch (err) {
+					logger.error('Error in simulator.join handler', { socketId: socket.id, error: err });
+					ack?.({ success: false, message: 'Internal error' });
+				}
 			}
 		);
+
+		socket.on('hardware.join', (payload: any, ack?: (value: unknown) => void) => {
+			try {
+				logger.debug('Hardware.join received', {
+					socketId: socket.id,
+					payloadType: typeof payload,
+					payload: payload ? JSON.stringify(payload) : 'undefined'
+				});
+
+				socket.join('hardware');
+				hardwareGateway.markHardwareConnected(socket.id);
+
+				logger.debug('Hardware room joined', {
+					socketId: socket.id
+				});
+				ack?.({ success: true, room: 'hardware' as JoinedRoom });
+			} catch (err) {
+				logger.error('Error in hardware.join handler', { socketId: socket.id, error: err });
+				ack?.({ success: false, message: 'Internal error' });
+			}
+		});
 
 		socket.on(
 			'operator.gate.command.request',

@@ -31,7 +31,7 @@ export const getHardwareBootstrapConfig = (requestHost?: string): HardwareBootst
 	);
 
 	const configuredPath = process.env.HARDWARE_SOCKET_PATH?.trim();
-	const socketPath = configuredPath && configuredPath.length > 0 ? configuredPath : '/socket.io/?EIO=4';
+	const socketPath = configuredPath && configuredPath.length > 0 ? configuredPath : '/socket.io';
 
 	const reconnectIntervalMs = parsePositiveInteger(
 		process.env.HARDWARE_SOCKET_RECONNECT_INTERVAL_MS,

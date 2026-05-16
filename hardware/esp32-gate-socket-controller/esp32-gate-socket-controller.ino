@@ -23,8 +23,9 @@ const char* HARDWARE_BOOTSTRAP_KEY_STR = HW_HARDWARE_BOOTSTRAP_KEY;
 // ===== Runtime socket config loaded from backend env =====
 String socketHost = "192.168.1.5";
 uint16_t socketPort = 5000;
-String socketPath = "/socket.io/?EIO=4";
+String socketPath = "/socket.io";
 String simulatorApiKey = SIMULATOR_KEY;
+String hardwareBootstrapKey = HARDWARE_BOOTSTRAP_KEY_STR;
 uint32_t reconnectIntervalMs = 5000;
 
 // ===== Servo pins =====
@@ -39,7 +40,10 @@ const int SERVO_STEP_DELAY_MS = 35;
 // ===== Connection state =====
 bool socketConnected = false;
 bool joinSent = false;
+bool joinPending = false;
+unsigned long joinRequestedAt = 0;
 unsigned long lastReconnectAttempt = 0;
+const unsigned long JOIN_DELAY_MS = 1000;
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 SocketIOclient socketIO;
@@ -104,17 +108,11 @@ bool fetchSocketConfigFromBackend() {
 
   socketHost = fetchedHost;
   socketPort = static_cast<uint16_t>(fetchedPort);
-  // sanitize path: remove query string if present (Socket.IO client library handles EIO internally)
-  String rawPath = String(fetchedPath);
-  int qpos = rawPath.indexOf('?');
-  if (qpos >= 0) {
-    rawPath = rawPath.substring(0, qpos);
-  }
-  if (!rawPath.startsWith("/")) {
-    rawPath = "/" + rawPath;
-  }
-  socketPath = rawPath;
+  // Match the frontend client: keep the actual Socket.IO endpoint fixed.
+  // The bootstrap response is still logged for verification, but the live connection always uses /socket.io.
+  socketPath = "/socket.io";
   simulatorApiKey = fetchedSimulatorApiKey;
+  hardwareBootstrapKey = HARDWARE_BOOTSTRAP_KEY_STR;
   reconnectIntervalMs = fetchedReconnectIntervalMs > 0 ? static_cast<uint32_t>(fetchedReconnectIntervalMs) : 5000;
 
   Serial.println("[Bootstrap] Config loaded from backend env");
@@ -210,13 +208,13 @@ void emitHardwareJoin() {
     return;  // Prevent duplicate join emissions
   }
 
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(512);
   JsonArray root = doc.to<JsonArray>();
   root.add("hardware.join");
-
+  
   JsonObject payload = root.createNestedObject();
-  if (simulatorApiKey.length() > 0) {
-    payload["apiKey"] = simulatorApiKey;
+  if (hardwareBootstrapKey.length() > 0) {
+    payload["hardwareKey"] = hardwareBootstrapKey;
   }
 
   String output;
@@ -228,9 +226,19 @@ void emitHardwareJoin() {
   Serial.print("[Socket] Payload length: ");
   Serial.println(output.length());
   
-  socketIO.sendEVENT(output);
+  bool ok = socketIO.sendEVENT(output);
+  Serial.print("[Socket] sendEVENT ok: ");
+  Serial.println(ok ? "true" : "false");
   joinSent = true;
   Serial.println("[Socket] hardware.join sent");
+
+  // Also send a simple test event so backend can detect any incoming events from this client.
+  String testPayload = String("[\"__hardware_test\",{\"now\":") + String(millis()) + String("}]");
+  Serial.print("[Socket] sending __hardware_test: ");
+  Serial.println(testPayload);
+  bool okTest = socketIO.sendEVENT(testPayload);
+  Serial.print("[Socket] sendEVENT __hardware_test ok: ");
+  Serial.println(okTest ? "true" : "false");
 }
 
 void handleGateEnvelope(JsonObjectConst envelope) {
@@ -254,7 +262,13 @@ void onSocketEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
     case sIOtype_DISCONNECT:
       socketConnected = false;
       joinSent = false;
+      joinPending = false;
       Serial.println("[Socket] Disconnected");
+      // Provide extra state info on disconnect for debugging
+      Serial.print("[Socket] Disconnect state -> joinSent=");
+      Serial.print(joinSent ? "true" : "false");
+      Serial.print(" joinPending=");
+      Serial.println(joinPending ? "true" : "false");
       displayStatus("Socket", "Disconnected");
       break;
 
@@ -262,9 +276,9 @@ void onSocketEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
       socketConnected = true;
       Serial.println("[Socket] Connected");
       displayStatus("Socket", "Connected");
-      // small delay to ensure handshake fully settled on both sides
-      delay(200);
-      emitHardwareJoin();
+      joinPending = true;
+      joinRequestedAt = millis();
+      joinSent = false;
       break;
 
     case sIOtype_EVENT: {
@@ -323,6 +337,7 @@ void onSocketEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) 
       Serial.println("[Socket] ERROR received");
       socketConnected = false;
       joinSent = false;
+      joinPending = false;
       break;
 
     default:
@@ -354,13 +369,20 @@ void setup() {
     displayStatus("Bootstrap fail", "Using fallback");
     socketHost = BOOTSTRAP_HOST_STR;
     socketPort = BOOTSTRAP_PORT_VAL;
-      socketPath = "/socket.io";
+    socketPath = "/socket.io";
+    hardwareBootstrapKey = HARDWARE_BOOTSTRAP_KEY_STR;
     reconnectIntervalMs = 5000;
   }
 
-  socketIO.begin(socketHost.c_str(), socketPort, socketPath.c_str());
+  // Use the library's native Socket.IO handshake shape. The server allows EIO3,
+  // and we keep a hardware marker in the query string while preserving the client header.
+    String fullPath = "/socket.io/?EIO=3&clientType=hardware";
+    socketPath = fullPath;
+    socketIO.begin(socketHost.c_str(), socketPort, fullPath.c_str());
   socketIO.onEvent(onSocketEvent);
   socketIO.setReconnectInterval(reconnectIntervalMs);
+  
+  Serial.println("[Socket] Using path: " + fullPath);
 
   Serial.print("[Socket] begin -> host=");
   Serial.print(socketHost);
@@ -368,6 +390,19 @@ void setup() {
   Serial.print(socketPort);
   Serial.print(" path=");
   Serial.println(socketPath);
+
+  Serial.print("[DEBUG] Final socketHost: '");
+  Serial.print(socketHost);
+  Serial.println("'");
+  Serial.print("[DEBUG] Final socketPort: ");
+  Serial.println(socketPort);
+  Serial.print("[DEBUG] Final socketPath: '");
+  Serial.print(socketPath);
+  Serial.println("'");
+
+  Serial.print("[DEBUG] Bootstrap socket path source: '");
+  Serial.print(BOOTSTRAP_PATH_STR);
+  Serial.println("'");
 
   Serial.println("[System] Ready");
   displayStatus("System", "Ready");
@@ -379,6 +414,11 @@ void loop() {
   }
 
   socketIO.loop();
+
+  if (socketConnected && joinPending && !joinSent && (millis() - joinRequestedAt) >= JOIN_DELAY_MS) {
+    joinPending = false;
+    emitHardwareJoin();
+  }
 
   // Monitor connection state
   unsigned long now = millis();

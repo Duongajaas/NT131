@@ -282,7 +282,6 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 
 	ioServer.use(async (socket, next) => {
 		const token = getSocketToken(socket);
-		// console.log('Socket authentication attempt', { token: token ? '***' : null, socketId: socket.id });
 		if (!token) {
 			return next();
 		}

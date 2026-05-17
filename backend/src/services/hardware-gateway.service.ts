@@ -18,7 +18,6 @@ class HardwareGatewayService implements HardwareGatewayAdapter {
 	}
 
 	markHardwareConnected(socketId: string) {
-        console.log(`Marking hardware connected: ${socketId}`);
 		if (this.hardwareSockets.has(socketId)) {
 			return;
 		}

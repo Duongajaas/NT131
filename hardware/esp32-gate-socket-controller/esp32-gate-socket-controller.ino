@@ -79,6 +79,7 @@ String currentRfidCorrelationId = "";
 String serialRfidBuffer = "";
 unsigned long serialRfidLastByteAt = 0;
 const unsigned long SERIAL_RFID_IDLE_FLUSH_MS = 40;
+const size_t SERIAL_RFID_MAX_BUFFER = 64;
 String lastScannedUid = "";
 String lastHandledEventId = "";
 
@@ -379,6 +380,12 @@ void processSerialRfidInput() {
     }
 
     serialRfidBuffer += ch;
+
+    if (serialRfidBuffer.length() > SERIAL_RFID_MAX_BUFFER) {
+      Serial.println("[RFID] serial buffer overflow, clearing");
+      serialRfidBuffer = "";
+      break;
+    }
   }
 
   if (serialRfidBuffer.length() == 0) {
@@ -572,7 +579,12 @@ void emitHardwareJoin() {
 }
 
 void handleGateEnvelope(JsonObjectConst envelope) {
+  Serial.println("[Gate] handleGateEnvelope called");
+  
   const char* source = envelope["source"] | "";
+  Serial.print("[Gate] source=");
+  Serial.println(source);
+  
   if (OPERATOR_ONLY_CONTROL && String(source) != "operator") {
     Serial.print("[Gate] Ignored command from source=");
     Serial.println(source);
@@ -581,13 +593,20 @@ void handleGateEnvelope(JsonObjectConst envelope) {
 
   JsonVariantConst payload = envelope["payload"];
   if (payload.isNull()) {
+    Serial.println("[Gate] payload is null");
     return;
   }
 
   const char* gateId = payload["gateId"] | "";
   const char* command = payload["command"] | "";
 
+  Serial.print("[Gate] gateId from payload=");
+  Serial.println(gateId);
+  Serial.print("[Gate] command from payload=");
+  Serial.println(command);
+
   if (strlen(gateId) == 0 || strlen(command) == 0) {
+    Serial.println("[Gate] gateId or command is empty");
     return;
   }
 

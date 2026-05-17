@@ -24,6 +24,7 @@ interface ParkingScene3DProps {
 	activePlateNumber: string;
 	activeVehicleType?: VehicleType;
 	activeSceneSlotId?: string;
+	rfidCheckpoint?: 'entry_rfid' | 'exit_rfid';
 	parkedVehicles?: Array<{
 		localId: string;
 		plateNumber: string;
@@ -334,7 +335,10 @@ const createIdlePreviewPath = (slotId: number): PathPoint[] => {
 	];
 };
 
-const createCarWaypoints = (slotId: number): Record<SimulatorStage, PathPoint[]> => {
+const createCarWaypoints = (
+	slotId: number,
+	rfidCheckpoint: 'entry_rfid' | 'exit_rfid' = 'entry_rfid'
+): Record<SimulatorStage, PathPoint[]> => {
 	const slotPath = generatePath(slotId);
 	const idlePreviewPath = createIdlePreviewPath(slotId);
 
@@ -345,7 +349,7 @@ const createCarWaypoints = (slotId: number): Record<SimulatorStage, PathPoint[]>
 			ENTRY_RFID_POINT
 		],
 		barrier_pass: [ENTRY_BARRIER_POSITION],
-		waiting_rfid: [ENTRY_RFID_POINT],
+		waiting_rfid: [rfidCheckpoint === 'exit_rfid' ? EXIT_RFID_POINT : ENTRY_RFID_POINT],
 		entry_processing: slotPath.entryProcessing,
 		assigned_slot: slotPath.toSlot,
 		parked: [slotPath.parked],
@@ -979,6 +983,7 @@ function ParkingScene3D({
 	activePlateNumber,
 	activeVehicleType = 'car',
 	activeSceneSlotId = '',
+	rfidCheckpoint = 'entry_rfid',
 	parkedVehicles = [],
 	entryGateOpen = false,
 	exitGateOpen = false,
@@ -989,7 +994,10 @@ function ParkingScene3D({
 }: ParkingScene3DProps) {
 	const parsedActiveSceneSlotId = Number.parseInt(activeSceneSlotId, 10);
 	const targetSlotId = isSupportedDemoSlotId(parsedActiveSceneSlotId) ? parsedActiveSceneSlotId : 8;
-	const carWaypointsByStage = useMemo(() => createCarWaypoints(targetSlotId), [targetSlotId]);
+	const carWaypointsByStage = useMemo(
+		() => createCarWaypoints(targetSlotId, rfidCheckpoint),
+		[targetSlotId, rfidCheckpoint]
+	);
 	const sceneShellRef = useRef<HTMLDivElement>(null);
 	const currentStageRef = useRef<SimulatorStage>(stage);
 	const [isFullscreen, setIsFullscreen] = useState(false);

@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { EventFeed } from './event-feed';
 import {
-	createParkingEntry,
 	listParkingSlots,
-	verifyRfidPlate
+	createParkingEntry
 } from '../api/parking.api';
 import { listRfidCards } from '../api/rfid-card.api';
 import { getVehicleById } from '../api/vehicle.api';
@@ -39,14 +38,12 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	const [slotBusy, setSlotBusy] = useState(false);
 	const [manualGateBusy, setManualGateBusy] = useState(false);
 	const [expectedPlateByUid, setExpectedPlateByUid] = useState('');
-	const [autoEntryBusy, setAutoEntryBusy] = useState(false);
 	const [slotRows, setSlotRows] = useState<ParkingSlotRecord[]>([]);
 
 	const events = useOperatorStore((state) => state.events);
 	const sessions = useOperatorStore((state) => state.sessions);
 	const entryGateState = useOperatorStore((state) => state.entryGateState);
 	const exitGateState = useOperatorStore((state) => state.exitGateState);
-	const upsertSession = useOperatorStore((state) => state.upsertSession);
 
 	const latestEntryVehicleEvent = useMemo(
 		() =>
@@ -78,6 +75,20 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	const latestExitDetectedPlate = latestExitVehicleEvent
 		? parseVehicleStatePayload(latestExitVehicleEvent).plateNumber || ''
 		: '';
+	const latestRejectedRfidEvent = useMemo(
+		() =>
+			events.find((event) => {
+				if (event.eventName !== 'rfid.scan.rejected') {
+					return false;
+				}
+
+				const payload = (event.payload ?? {}) as Record<string, unknown>;
+				return typeof payload.uid === 'string' && payload.uid.length > 0;
+			}),
+		[events]
+	);
+	const latestRejectedRfidCorrelationId = latestRejectedRfidEvent?.correlationId;
+	const latestExitCorrelationId = latestExitVehicleEvent?.correlationId;
 	const latestRfidEvent = useMemo(
 		() =>
 			events.find((event) => {
@@ -99,9 +110,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		const payload = (latestRfidEvent?.payload ?? {}) as Record<string, unknown>;
 		return typeof payload.uid === 'string' ? normalizeText(payload.uid) : '';
 	}, [latestRfidEvent]);
-	const latestEntryCorrelationId = latestEntryVehicleEvent?.correlationId;
 	const normalizedExpectedPlateByUid = normalizeText(expectedPlateByUid || '');
-	const lastAutoEntryKeyRef = useRef('');
 
 	const resolvePlateMatchStatus = (plateValue: string): PlateMatchStatus => {
 		const normalizedPlate = normalizeText(plateValue || '');
@@ -113,9 +122,13 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	};
 
 	const entryPlateForMatch = latestDetectedPlate;
-	const normalizedEntryPlateForMatch = normalizeText(entryPlateForMatch || '');
 	const entryPlateMatchStatus = resolvePlateMatchStatus(entryPlateForMatch);
-	const exitPlateMatchStatus = resolvePlateMatchStatus(latestExitDetectedPlate);
+	const exitPlateMatchStatus =
+		latestRejectedRfidEvent && latestRejectedRfidCorrelationId && latestExitCorrelationId
+			? latestRejectedRfidCorrelationId === latestExitCorrelationId
+				? 'danger'
+				: resolvePlateMatchStatus(latestExitDetectedPlate)
+			: resolvePlateMatchStatus(latestExitDetectedPlate);
 
 	const [lastSlotEventId, setLastSlotEventId] = useState('');
 	const occupiedSlots = useMemo(
@@ -161,14 +174,6 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		void loadParkingSlots();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [events, lastSlotEventId]);
-
-	const runAction = async (task: () => Promise<void>) => {
-		try {
-			await task();
-		} catch (taskError) {
-			notifyError(taskError instanceof Error ? taskError.message : 'Thao tác thất bại');
-		}
-	};
 
 	const findVehiclePlateByUid = async (uidValue: string) => {
 		const normalizedUid = normalizeText(uidValue);
@@ -217,29 +222,6 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		};
 	}, [latestScannedUid, token]);
 
-	const processEntry = async (uidValue: string, observedPlateValue: string, correlationId?: string) => {
-		if (!uidValue || !observedPlateValue) {
-			notifyError('Thiếu UID hoặc biển số camera để tạo phiên vào bãi');
-			return null;
-		}
-
-		const response = await createParkingEntry(
-			{
-				uid: uidValue,
-				plate_number: normalizeText(observedPlateValue),
-				plate_confidence: 95,
-				correlation_id: correlationId || latestEntryCorrelationId || crypto.randomUUID()
-			},
-			{ token }
-		);
-
-		upsertSession(response.session);
-		void loadParkingSlots();
-		notifySuccess(`Đã tạo phiên: ${response.gate_action.toUpperCase()} (${response.session._id})`);
-		lastAutoEntryKeyRef.current = '';
-		return response;
-	};
-
 	const handleManualGateCommand = async (
 		gateId: 'entry-gate' | 'exit-gate',
 		command: 'open' | 'close'
@@ -252,10 +234,27 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 
 		setManualGateBusy(true);
 		try {
+			const correlationId = crypto.randomUUID();
+
+			// Auto-create entry session when opening entry gate with valid RFID match
+			if (gateId === 'entry-gate' && command === 'open' && entryPlateMatchStatus === 'good' && latestScannedUid && latestDetectedPlate) {
+				const entryResponse = await createParkingEntry(
+					{
+						uid: latestScannedUid,
+						plate_number: normalizeText(latestDetectedPlate),
+						plate_confidence: 95,
+						correlation_id: correlationId
+					},
+					{ token }
+				);
+				notifySuccess(`Đã tạo phiên vào bãi: ${entryResponse.session._id}`);
+				void loadParkingSlots();
+			}
+
 			const response = await requestManualGateCommand(socket, {
 				gateId,
 				command,
-				correlationId: crypto.randomUUID()
+				correlationId
 			});
 
 			notifySuccess(`Đã gửi lệnh ${command} cho ${gateId} (${response.state || 'không rõ trạng thái'})`);
@@ -265,76 +264,6 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			setManualGateBusy(false);
 		}
 	};
-
-	const runVerifyAndProcessEntry = async ({
-		uidValue,
-		observedPlateValue,
-		correlationId,
-		auto
-	}: {
-		uidValue: string;
-		observedPlateValue: string;
-		correlationId: string;
-		auto: boolean;
-	}) => {
-		const result = await verifyRfidPlate(
-			{
-				uid: uidValue,
-				observed_plate_number: observedPlateValue,
-				correlation_id: correlationId
-			},
-			{ token }
-		);
-
-		if (result.decision === 'accepted') {
-			setExpectedPlateByUid(normalizeText(result.expected_plate_number || expectedPlateByUid));
-			if (auto) {
-				notifySuccess('RFID + biển số khớp, đã tự động xác nhận vào bãi');
-			}
-			await processEntry(uidValue, observedPlateValue, correlationId);
-			return;
-		}
-
-		notifyError(
-			`Kiểm tra RFID: ${result.decision.toUpperCase()} - expected ${result.expected_plate_number || 'N/A'}`
-		);
-	};
-
-	useEffect(() => {
-		if (!latestScannedUid || !normalizedExpectedPlateByUid || !normalizedEntryPlateForMatch) {
-			return;
-		}
-
-		if (normalizedExpectedPlateByUid !== normalizedEntryPlateForMatch) {
-			return;
-		}
-
-		const normalizedUid = latestScannedUid;
-		const correlationId = latestEntryCorrelationId || crypto.randomUUID();
-		const triggerKey = `${normalizedUid}|${normalizedEntryPlateForMatch}|${correlationId}`;
-		if (autoEntryBusy || lastAutoEntryKeyRef.current === triggerKey) {
-			return;
-		}
-
-		lastAutoEntryKeyRef.current = triggerKey;
-		setAutoEntryBusy(true);
-		void runAction(async () => {
-			await runVerifyAndProcessEntry({
-				uidValue: normalizedUid,
-				observedPlateValue: normalizedEntryPlateForMatch,
-				correlationId,
-				auto: true
-			});
-		}).finally(() => {
-			setAutoEntryBusy(false);
-		});
-	}, [
-		autoEntryBusy,
-		latestEntryCorrelationId,
-		latestScannedUid,
-		normalizedEntryPlateForMatch,
-		normalizedExpectedPlateByUid
-	]);
 
 	return (
 		<section className="page-grid">

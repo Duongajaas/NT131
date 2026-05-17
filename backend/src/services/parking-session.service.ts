@@ -155,15 +155,6 @@ export const createEntrySession = async (input: EntryInput) => {
 			}
 		});
 	} else {
-		const gateCommand = await hardwareGateway.openGate('entry-gate', {
-			commandId: randomUUID(),
-			sessionId: session._id.toString(),
-			correlationId: input.correlation_id,
-			requestedBy: 'backend',
-			timeoutMs: 5000,
-			action: 'open'
-		});
-
 		publishRealtimeEvent({
 			eventName: 'rfid.scan.accepted',
 			correlationId: input.correlation_id,
@@ -172,26 +163,6 @@ export const createEntrySession = async (input: EntryInput) => {
 				uid: normalizedUid,
 				plateNumber: normalizedPlate,
 				decision: 'accepted'
-			}
-		});
-		publishRealtimeEvent({
-			eventName: 'gate.command.sent',
-			correlationId: input.correlation_id,
-			sessionId: session._id.toString(),
-			payload: {
-				gateId: 'entry-gate',
-				command: 'open',
-				result: gateCommand.result,
-				commandId: gateCommand.commandId
-			}
-		});
-		publishRealtimeEvent({
-			eventName: 'gate.state.changed',
-			correlationId: input.correlation_id,
-			sessionId: session._id.toString(),
-			payload: {
-				gateId: 'entry-gate',
-				state: gateCommand.stateAfter
 			}
 		});
 	}

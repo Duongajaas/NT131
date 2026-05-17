@@ -15,4 +15,21 @@
 
 #define SIMULATOR_KEY "YOUR_SIMULATOR_KEY"
 
+// MFRC522 RC522 reader default pin mapping for ESP32 (example wiring):
+// SDA/SS  -> D5  (GPIO5)
+// MOSI    -> D23 (GPIO23)
+// MISO    -> D19 (GPIO19)
+// SCK     -> D18 (GPIO18)
+// RST     -> D17 (GPIO17)
+// 3.3V    -> 3V3
+// GND     -> GND
+// Override these in your board-specific hardware_config.h if needed.
+#define SS_PIN 5
+#define RST_PIN 17
+
+// RFID scan testing over Serial monitor (ESP32 firmware listens for commands):
+// - RFID:<UID>        -> emit scan on entry_rfid checkpoint
+// - RFID_ENTRY:<UID>  -> emit scan on entry_rfid checkpoint
+// - RFID_EXIT:<UID>   -> emit scan on exit_rfid checkpoint
+
 #endif // HARDWARE_CONFIG_H

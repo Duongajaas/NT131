@@ -3,6 +3,7 @@ import {
 	connectSocket,
 	disconnectSocket,
 	emitSimulatorCheckpoint,
+	emitSimulatorStage,
 	joinSimulatorRoom,
 	requestSimulatorGateCommand,
 	subscribeRealtime
@@ -25,6 +26,7 @@ type SimulatorStage =
 	| 'idle'
 	| 'approaching_entry'
 	| 'waiting_rfid'
+	| 'barrier_pass'
 	| 'entry_processing'
 	| 'assigned_slot'
 	| 'parked'
@@ -56,6 +58,13 @@ interface SessionWaiter {
 	timerId: number;
 }
 
+interface StagePathWaiter {
+	stage: SimulatorStage;
+	resolve: () => void;
+	reject: (error: Error) => void;
+	timerId: number;
+}
+
 type VehicleType = 'motorbike' | 'car';
 
 interface ParkedVehicle {
@@ -74,6 +83,7 @@ const STAGE_LABELS: Record<SimulatorStage, string> = {
 	idle: 'Idle',
 	approaching_entry: 'Approaching entry gate',
 	waiting_rfid: 'Waiting RFID scan',
+	barrier_pass: 'Barrier pass',
 	entry_processing: 'Processing entry',
 	assigned_slot: 'Assigned slot',
 	parked: 'Parked',
@@ -83,11 +93,7 @@ const STAGE_LABELS: Record<SimulatorStage, string> = {
 };
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const STAGE_TRAVEL_MS = 8500;
-const STAGE_SHORT_HOLD_MS = 1200;
-const EXIT_STAGE_TRAVEL_MS = 11000;
-const GATE_WAIT_TIMEOUT_MS = 15000;
-const SESSION_WAIT_TIMEOUT_MS = 20000;
+const STAGE_PATH_TIMEOUT_MS = 60000;
 const isGateOpenState = (state?: string) => state === 'opening' || state === 'open';
 
 const MIN_LOADING_DURATION_MS = 2200;
@@ -137,10 +143,17 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 	const activeVehicleRef = useRef<ParkedVehicle | null>(null);
 	const parkedVehiclesRef = useRef<ParkedVehicle[]>([]);
 	const slotIdRef = useRef('');
+	const stageRef = useRef<SimulatorStage>('idle');
 	const activeCorrelationIdRef = useRef('');
+	const currentRfidCheckpointRef = useRef<'entry_rfid' | 'exit_rfid'>('entry_rfid');
 	const sessionWaitersRef = useRef<SessionWaiter[]>([]);
+	const stagePathWaitersRef = useRef<StagePathWaiter[]>([]);
 	const createdSessionsByCorrelationRef = useRef<Map<string, string>>(new Map());
 	const gateWaitersRef = useRef<Record<GateId, GateWaiter[]>>({
+		'entry-gate': [],
+		'exit-gate': []
+	});
+	const gateClosedWaitersRef = useRef<Record<GateId, GateWaiter[]>>({
 		'entry-gate': [],
 		'exit-gate': []
 	});
@@ -167,6 +180,27 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		slotIdRef.current = slotId;
 	}, [slotId]);
 
+	useEffect(() => {
+		stageRef.current = stage;
+	}, [stage]);
+
+	useEffect(() => {
+		const socket = simulatorSocketRef.current;
+		if (!socket || !socket.connected || !hasJoinedSimulatorRoomRef.current) {
+			return;
+		}
+
+		void emitSimulatorStage(socket, {
+			stage,
+			plateNumber: plateNumber || undefined,
+			checkpoint: stage === 'waiting_rfid' ? currentRfidCheckpointRef.current : undefined,
+			sessionId: sessionId || undefined,
+			correlationId: activeCorrelationIdRef.current || undefined
+		}).catch((error) => {
+			pushLog('Stage sync failed', error instanceof Error ? error.message : 'Unable to sync stage');
+		});
+	}, [stage, plateNumber, sessionId]);
+
 	const isRealtimeGateSyncActive = () =>
 		Boolean(simulatorSocketRef.current?.connected && hasJoinedSimulatorRoomRef.current);
 
@@ -177,6 +211,20 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 
 		gateWaitersRef.current[gateId] = [];
+
+		for (const waiter of waiters) {
+			window.clearTimeout(waiter.timerId);
+			waiter.resolve();
+		}
+	};
+
+	const resolveGateClosedWaiters = (gateId: GateId) => {
+		const waiters = gateClosedWaitersRef.current[gateId];
+		if (waiters.length === 0) {
+			return;
+		}
+
+		gateClosedWaitersRef.current[gateId] = [];
 
 		for (const waiter of waiters) {
 			window.clearTimeout(waiter.timerId);
@@ -201,17 +249,41 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 	};
 
+	const resolveStagePathWaiters = (stageValue: SimulatorStage) => {
+		const waiters = stagePathWaitersRef.current.filter((waiter) => waiter.stage === stageValue);
+		if (waiters.length === 0) {
+			return;
+		}
+
+		stagePathWaitersRef.current = stagePathWaitersRef.current.filter(
+			(waiter) => waiter.stage !== stageValue
+		);
+
+		for (const waiter of waiters) {
+			window.clearTimeout(waiter.timerId);
+			waiter.resolve();
+		}
+	};
+
 	const applyGateState = (gateId: 'entry-gate' | 'exit-gate', gateState: string) => {
 		const isOpen = isGateOpenState(gateState);
 
 		if (gateId === 'entry-gate') {
+			const wasOpen = entryGateOpenRef.current;
 			entryGateOpenRef.current = isOpen;
 			setEntryGateOpen(isOpen);
+			if (wasOpen && !isOpen) {
+				resolveGateClosedWaiters('entry-gate');
+			}
 		}
 
 		if (gateId === 'exit-gate') {
+			const wasOpen = exitGateOpenRef.current;
 			exitGateOpenRef.current = isOpen;
 			setExitGateOpen(isOpen);
+			if (wasOpen && !isOpen) {
+				resolveGateClosedWaiters('exit-gate');
+			}
 		}
 
 		if (isOpen) {
@@ -219,25 +291,29 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 	};
 
-	const waitForGateOpen = (gateId: GateId, timeoutMs = GATE_WAIT_TIMEOUT_MS) => {
+	const waitForGateOpen = (gateId: GateId) => {
 		const gateIsOpen = gateId === 'entry-gate' ? entryGateOpenRef.current : exitGateOpenRef.current;
 		if (gateIsOpen || !isRealtimeGateSyncActive()) {
 			return Promise.resolve();
 		}
 
-		return new Promise<void>((resolve, reject) => {
-			const timerId = window.setTimeout(() => {
-				gateWaitersRef.current[gateId] = gateWaitersRef.current[gateId].filter(
-					(waiter) => waiter.timerId !== timerId
-				);
-				reject(new Error(`Timed out waiting for ${gateId} to open`));
-			}, timeoutMs);
-
-			gateWaitersRef.current[gateId].push({ resolve, timerId });
+		return new Promise<void>((resolve) => {
+			gateWaitersRef.current[gateId].push({ resolve, timerId: 0 });
 		});
 	};
 
-	const waitForSessionCreated = (correlationId: string, timeoutMs = SESSION_WAIT_TIMEOUT_MS) => {
+	const waitForGateClosed = (gateId: GateId) => {
+		const gateIsOpen = gateId === 'entry-gate' ? entryGateOpenRef.current : exitGateOpenRef.current;
+		if (!gateIsOpen || !isRealtimeGateSyncActive()) {
+			return Promise.resolve();
+		}
+
+		return new Promise<void>((resolve) => {
+			gateClosedWaitersRef.current[gateId].push({ resolve, timerId: 0 });
+		});
+	};
+
+	const waitForSessionCreated = (correlationId: string) => {
 		if (!correlationId) {
 			return Promise.reject(new Error('Missing correlation id for session wait'));
 		}
@@ -249,14 +325,23 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 
 		return new Promise<string>((resolve, reject) => {
-			const timerId = window.setTimeout(() => {
-				sessionWaitersRef.current = sessionWaitersRef.current.filter(
-					(waiter) => waiter.timerId !== timerId
-				);
-				reject(new Error('Timed out waiting for parking session creation'));
-			}, timeoutMs);
+			sessionWaitersRef.current.push({ correlationId, resolve, reject, timerId: 0 });
+		});
+	};
 
-			sessionWaitersRef.current.push({ correlationId, resolve, reject, timerId });
+	const waitForStagePath = (stageValue: SimulatorStage) => {
+		return new Promise<void>((resolve, reject) => {
+			const timerId = window.setTimeout(() => {
+				stagePathWaitersRef.current = stagePathWaitersRef.current.filter((waiter) => waiter.timerId !== timerId);
+				reject(new Error(`Timeout waiting for stage path completion: ${stageValue}`));
+			}, STAGE_PATH_TIMEOUT_MS);
+
+			stagePathWaitersRef.current.push({
+				stage: stageValue,
+				resolve,
+				reject,
+				timerId
+			});
 		});
 	};
 
@@ -417,12 +502,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 				const sessionStatus = typeof event.payload?.status === 'string' ? event.payload.status : undefined;
 				const vehicleId = typeof event.payload?.vehicleId === 'string' ? event.payload.vehicleId : undefined;
 				if (event.correlationId === activeCorrelationIdRef.current && createdSessionId) {
-					if (sessionStatus === 'approved_entry') {
-						applyGateState('entry-gate', 'open');
-						pushLog('Barrier opened', 'Entry gate opened from approved session event');
-					}
 
-					setSessionId(createdSessionId);
 					setActiveVehicle((current) =>
 						current
 							? {
@@ -441,8 +521,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 					createdSessionId &&
 					vehicleId &&
 					!busyRef.current &&
-					!hydratingRef.current &&
-					!activeVehicleRef.current
+					!hydratingRef.current
 				) {
 					pushLog('Operator entry detected', `Processing approved entry for session ${createdSessionId} (correlation: ${event.correlationId})`);
 					void runOperatorApprovedEntryFlow(createdSessionId, vehicleId, event.correlationId);
@@ -575,10 +654,10 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 
 		setStage('entry_processing');
 		pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
-		await wait(STAGE_TRAVEL_MS);
+		await waitForStagePath('entry_processing');
 		setStage('assigned_slot');
 		pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
-		await wait(STAGE_TRAVEL_MS);
+		await waitForStagePath('assigned_slot');
 		setStage('parked');
 		setParkedVehicles((current) => [
 			...current,
@@ -602,6 +681,8 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		vehicleId: string,
 		correlationIdValue: string
 	) => {
+		const existingVehicle = activeVehicleRef.current;
+		const resumingExistingVehicle = Boolean(existingVehicle);
 
 		const occupiedSlots = new Set(parkedVehiclesRef.current.map((vehicle) => vehicle.sceneSlotId));
 		const selectedSceneSlotId = chooseSceneSlotId(occupiedSlots, Number.parseInt(slotIdRef.current, 10));
@@ -619,14 +700,16 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			const nextPlateNumber = normalizePlateNumber(vehicle.plate_number);
 			const nextVehicleType: VehicleType = vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
 			const normalizedCorrelationId = correlationIdValue || crypto.randomUUID();
+			const localId = existingVehicle?.localId || normalizedCorrelationId;
 
 			activeCorrelationIdRef.current = normalizedCorrelationId;
 			setPlateNumber(nextPlateNumber);
 			setVehicleType(nextVehicleType);
 			setSessionId(sessionIdValue);
-			setStage('approaching_entry');
+			setStage(resumingExistingVehicle ? 'waiting_rfid' : 'approaching_entry');
+			currentRfidCheckpointRef.current = 'entry_rfid';
 			setActiveVehicle({
-				localId: normalizedCorrelationId,
+				localId,
 				sessionId: sessionIdValue,
 				plateNumber: nextPlateNumber,
 				dbSlotCode: '',
@@ -636,16 +719,25 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			setResult('Vehicle spawned from operator-approved entry');
 			pushLog('Vehicle spawned', `${nextPlateNumber} -> session ${sessionIdValue}`);
 
-			await wait(STAGE_TRAVEL_MS);
-			setStage('waiting_rfid');
-			pushLog('Vehicle stopped', 'Vehicle reached entry checkpoint after operator approval');
+			if (!resumingExistingVehicle) {
+				await waitForStagePath('approaching_entry');
+				setStage('waiting_rfid');
+				pushLog('Vehicle stopped', 'Vehicle reached entry checkpoint after operator approval');
+			} else {
+				pushLog('Vehicle resumed', 'Existing vehicle is waiting at RFID checkpoint for operator approval');
+			}
 			await notifyCheckpoint('entry_rfid', nextPlateNumber, sessionIdValue, normalizedCorrelationId);
 
-			applyGateState('entry-gate', 'open');
-			pushLog('Barrier opened', 'Entry gate already approved by backend, continuing drive-in');
+			if (isRealtimeGateSyncActive()) {
+				setResult('Waiting for backend gate state');
+				pushLog('Gate awaiting socket', 'Waiting for backend signal to open entry gate');
+				await waitForGateOpen('entry-gate');
+				pushLog('Barrier opened', 'Entry gate opened via backend API event');
+			} else {
+				applyGateState('entry-gate', 'open');
+				pushLog('Barrier opened', 'Entry gate opened locally');
+			}
 
-			await wait(STAGE_SHORT_HOLD_MS);
-			setStage('entry_processing');
 			pushLog('Vehicle proceeding', 'Monthly card approved - vehicle proceeding through open gate');
 			await finalizeEntryJourney(
 				sessionIdValue,
@@ -700,219 +792,511 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		setParkedVehicles((current) => current.filter((vehicle) => vehicle.localId !== localId));
 	};
 
+
+
+	// const simulateEntry = async () => {
+	// 	if (busy || hydrating) {
+	// 		return;
+	// 	}
+
+	// 	const selectedSceneSlotId = chooseSceneSlotId(occupiedSceneSlotIds, Number.parseInt(slotId, 10));
+	// 	if (!selectedSceneSlotId) {
+	// 		setResult('Bãi mô phỏng đã đầy, không còn slot trống');
+	// 		pushLog('Entry blocked', 'No free scene slot available');
+	// 		return;
+	// 	}
+
+	// 	setBusy(true);
+	// 	setStage('approaching_entry');
+	// 	const nextPlateNumber = normalizePlateNumber(plateNumber) || generateVehiclePlateNumber();
+	// 	const selectedVehicleType = vehicleType;
+	// 	let persistedVehicleType: VehicleType = selectedVehicleType;
+	// 	const correlationId = crypto.randomUUID();
+	// 	activeCorrelationIdRef.current = correlationId;
+	// 	setPlateNumber(nextPlateNumber);
+	// 	setActiveVehicle({
+	// 		localId: correlationId,
+	// 		sessionId: '',
+	// 		plateNumber: nextPlateNumber,
+	// 		dbSlotCode: '',
+	// 		sceneSlotId: selectedSceneSlotId,
+	// 		vehicleType: selectedVehicleType
+	// 	});
+	// 	setResult('Vehicle spawned and waiting for RFID scan');
+	// 	pushLog('Vehicle spawned', `${nextPlateNumber} -> scene slot ${selectedSceneSlotId}`);
+	// 	try {
+	// 		const vehicle = await createSimulatorVehicle({
+	// 			plateNumber: nextPlateNumber,
+	// 			vehicleType: selectedVehicleType
+	// 		});
+	// 		persistedVehicleType = vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
+	// 		setActiveVehicle((current) =>
+	// 			current
+	// 				? {
+	// 					...current,
+	// 					vehicleType: persistedVehicleType
+	// 				}
+	// 				: current
+	// 		);
+	// 					(!!activeVehicleRef.current || stage === 'waiting_rfid' || stage === 'approaching_entry')
+	// 	} catch (error) {
+	// 		setResult(error instanceof Error ? error.message : 'Failed to create vehicle record');
+	// 		pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
+	// 		setActiveVehicle(null);
+	// 		setStage('idle');
+	// 		setBusy(false);
+	// 		return;
+	// 	}
+	// 	if (!isRealtimeGateSyncActive()) {
+	// 		applyGateState('entry-gate', 'closed');
+	// 		applyGateState('exit-gate', 'closed');
+	// 	}
+
+	// 	try {
+	// 		await waitForStagePath('approaching_entry');
+	// 		setStage('waiting_rfid');
+	// 		currentRfidCheckpointRef.current = 'entry_rfid';
+	// 		pushLog('Vehicle stopped', 'Waiting for RFID scan and plate recognition');
+	// 		await notifyCheckpoint('entry_rfid', nextPlateNumber, '', correlationId);
+
+	// 		if (isRealtimeGateSyncActive()) {
+	// 			setResult('Waiting for backend gate state');
+	// 			pushLog('Gate awaiting socket', 'Waiting for backend signal to open entry gate');
+	// 			await waitForGateOpen('entry-gate');
+	// 			pushLog('Barrier opened', 'Entry gate opened via backend API event');
+	// 		} else {
+	// 			applyGateState('entry-gate', 'open');
+	// 			pushLog('Barrier opened', 'Entry gate lifted after check-in');
+	// 		}
+
+	// 		// Wait for gate to close before continuing
+	// 		if (isRealtimeGateSyncActive()) {
+	// 			setResult('Waiting for gate to close');
+	// 			pushLog('Gate waiting close', 'Vehicle passing through, waiting for gate to close');
+	// 			await waitForGateClosed('entry-gate');
+	// 			pushLog('Barrier closed', 'Entry gate closed, vehicle proceeding to parking');
+	// 		}
+
+	// 		const createdSessionId = await waitForSessionCreated(correlationId);
+	// 		setSessionId(createdSessionId);
+	// 		setActiveVehicle((current) =>
+	// 			current
+	// 				? {
+	// 					...current,
+	// 					sessionId: createdSessionId
+	// 				}
+	// 				: current
+	// 		);
+	// 		onSessionCreated(createdSessionId, nextPlateNumber);
+
+	// 		const slotResult = await assignParkingSlot(
+	// 			createdSessionId,
+	// 			{
+	// 				correlation_id: correlationId
+	// 			},
+	// 			getSimulatorApiKey()
+	// 		);
+	// 		setDbSlotCode(slotResult.slot.slot_code);
+	// 		setActiveVehicle((current) =>
+	// 			current
+	// 				? {
+	// 					...current,
+	// 					dbSlotCode: slotResult.slot.slot_code
+	// 				}
+	// 				: current
+	// 		);
+	// 		pushLog('Slot assigned', `Real DB slot ${slotResult.slot.slot_code} reserved for session ${createdSessionId}`);
+	// 		setResult(`Database slot assigned: ${slotResult.slot.slot_code}`);
+
+	// 		setStage('entry_processing');
+
+	// 		pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
+	// 		await waitForStagePath('entry_processing');
+	// 		setStage('assigned_slot');
+	// 		pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
+	// 		await waitForStagePath('assigned_slot');
+	// 		setStage('parked');
+	// 		setParkedVehicles((current) => [
+	// 			...current,
+	// 			{
+	// 				localId: correlationId,
+	// 				sessionId: createdSessionId,
+	// 				plateNumber: nextPlateNumber,
+	// 				dbSlotCode: slotResult.slot.slot_code,
+	// 				sceneSlotId: selectedSceneSlotId,
+	// 				vehicleType: persistedVehicleType
+	// 			}
+	// 		]);
+	// 		setActiveVehicle(null);
+	// 		pushLog('Vehicle parked', `Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+	// 		setResult(`Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+	// 		clearInputFields();
+	// 	} catch (error) {
+	// 		setResult(error instanceof Error ? error.message : 'Entry simulation failed');
+	// 		pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
+	// 		setActiveVehicle(null);
+	// 		setDbSlotCode('');
+	// 		setStage('idle');
+	// 	} finally {
+	// 		setBusy(false);
+	// 	}
+	// };
+
 	const simulateEntry = async () => {
-		if (busy || hydrating) {
-			return;
-		}
+	if (busy || hydrating) return;
 
-		const selectedSceneSlotId = chooseSceneSlotId(occupiedSceneSlotIds, Number.parseInt(slotId, 10));
-		if (!selectedSceneSlotId) {
-			setResult('Bãi mô phỏng đã đầy, không còn slot trống');
-			pushLog('Entry blocked', 'No free scene slot available');
-			return;
-		}
+	const selectedSceneSlotId = chooseSceneSlotId(occupiedSceneSlotIds, Number.parseInt(slotId, 10));
+	if (!selectedSceneSlotId) {
+		setResult('Bãi mô phỏng đã đầy, không còn slot trống');
+		pushLog('Entry blocked', 'No free scene slot available');
+		return;
+	}
 
-		setBusy(true);
-		setStage('approaching_entry');
-		const nextPlateNumber = normalizePlateNumber(plateNumber) || generateVehiclePlateNumber();
-		const selectedVehicleType = vehicleType;
-		let persistedVehicleType: VehicleType = selectedVehicleType;
-		const correlationId = crypto.randomUUID();
-		activeCorrelationIdRef.current = correlationId;
-		setPlateNumber(nextPlateNumber);
-		setActiveVehicle({
-			localId: correlationId,
-			sessionId: '',
+	setBusy(true);
+	setStage('approaching_entry');
+	const nextPlateNumber = normalizePlateNumber(plateNumber) || generateVehiclePlateNumber();
+	const selectedVehicleType = vehicleType;
+	let persistedVehicleType: VehicleType = selectedVehicleType;
+	const correlationId = crypto.randomUUID();
+	activeCorrelationIdRef.current = correlationId;
+	setPlateNumber(nextPlateNumber);
+	setActiveVehicle({
+		localId: correlationId,
+		sessionId: '',
+		plateNumber: nextPlateNumber,
+		dbSlotCode: '',
+		sceneSlotId: selectedSceneSlotId,
+		vehicleType: selectedVehicleType
+	});
+	setResult('Vehicle spawned and waiting for RFID scan');
+	pushLog('Vehicle spawned', `${nextPlateNumber} -> scene slot ${selectedSceneSlotId}`);
+
+	try {
+		const vehicle = await createSimulatorVehicle({
 			plateNumber: nextPlateNumber,
-			dbSlotCode: '',
-			sceneSlotId: selectedSceneSlotId,
 			vehicleType: selectedVehicleType
 		});
-		setResult('Vehicle spawned and waiting for RFID scan');
-		pushLog('Vehicle spawned', `${nextPlateNumber} -> scene slot ${selectedSceneSlotId}`);
-		try {
-			const vehicle = await createSimulatorVehicle({
-				plateNumber: nextPlateNumber,
-				vehicleType: selectedVehicleType
-			});
-			persistedVehicleType = vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
-			setActiveVehicle((current) =>
-				current
-					? {
-						...current,
-						vehicleType: persistedVehicleType
-					}
-					: current
-			);
-			pushLog('Vehicle persisted', `Vehicle ${vehicle._id} ready for operator RFID flow`);
-		} catch (error) {
-			setResult(error instanceof Error ? error.message : 'Failed to create vehicle record');
-			pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
-			setActiveVehicle(null);
-			setStage('idle');
-			setBusy(false);
-			return;
+		persistedVehicleType = vehicle.vehicle_type === 'motorbike' ? 'motorbike' : 'car';
+		setActiveVehicle((current) =>
+			current ? { ...current, vehicleType: persistedVehicleType } : current
+		);
+	} catch (error) {
+		setResult(error instanceof Error ? error.message : 'Failed to create vehicle record');
+		pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
+		setActiveVehicle(null);
+		setStage('idle');
+		setBusy(false);
+		return;
+	}
+
+	if (!isRealtimeGateSyncActive()) {
+		applyGateState('entry-gate', 'closed');
+		applyGateState('exit-gate', 'closed');
+	}
+
+	try {
+		await waitForStagePath('approaching_entry');
+		setStage('waiting_rfid');
+		currentRfidCheckpointRef.current = 'entry_rfid';
+		pushLog('Vehicle stopped', 'Waiting for RFID scan and plate recognition');
+		await notifyCheckpoint('entry_rfid', nextPlateNumber, '', correlationId);
+
+		if (isRealtimeGateSyncActive()) {
+			setResult('Waiting for backend gate state');
+			pushLog('Gate awaiting socket', 'Waiting for backend signal to open entry gate');
+			await waitForGateOpen('entry-gate');
+			pushLog('Barrier opened', 'Entry gate opened via backend API event');
+		} else {
+			applyGateState('entry-gate', 'open');
+			pushLog('Barrier opened', 'Entry gate lifted after check-in');
 		}
-		if (!isRealtimeGateSyncActive()) {
-			applyGateState('entry-gate', 'closed');
-			applyGateState('exit-gate', 'closed');
-		}
 
-		try {
-			await wait(STAGE_TRAVEL_MS);
-			setStage('waiting_rfid');
-			pushLog('Vehicle stopped', 'Waiting for RFID scan and plate recognition');
-			await notifyCheckpoint('entry_rfid', nextPlateNumber, '', correlationId);
+		// Chờ session từ socket hoặc fallback poll API theo correlationId
+		let createdSessionId: string;
+		const sessionFromSocket = await Promise.race([
+			waitForSessionCreated(correlationId),
+			wait(3000).then(() => null) // chờ socket 3s trước
+		]);
 
-			if (isRealtimeGateSyncActive()) {
-				setResult('Waiting for backend gate state');
-				pushLog('Gate awaiting socket', 'Waiting for backend signal to open entry gate');
-				await waitForGateOpen('entry-gate');
-				pushLog('Barrier opened', 'Entry gate opened via backend API event');
-			} else {
-				applyGateState('entry-gate', 'open');
-				pushLog('Barrier opened', 'Entry gate lifted after check-in');
-			}
-
-			await wait(STAGE_SHORT_HOLD_MS);
-
-			const createdSessionId = await waitForSessionCreated(correlationId);
-			setSessionId(createdSessionId);
-			setActiveVehicle((current) =>
-				current
-					? {
-						...current,
-						sessionId: createdSessionId
+		if (sessionFromSocket) {
+			createdSessionId = sessionFromSocket;
+			pushLog('Session received', `Session ${createdSessionId} from socket event`);
+		} else {
+			// Fallback: poll API lấy session mới nhất theo plateNumber
+			pushLog('Session polling', 'Socket timeout, polling API for session...');
+			let found: string | null = null;
+			for (let i = 0; i < 10; i++) {
+				await wait(1000);
+				try {
+					const sessions = await listParkingSessions({}, getSimulatorApiKey());
+					const match = sessions.find(
+						(s) =>
+							(s.entry_plate_text?.toUpperCase() === nextPlateNumber ||
+								(s as any).plate_number?.toUpperCase() === nextPlateNumber) &&
+							(s.status === 'active' || s.status === 'approved_entry' || !s.exit_time)
+					);
+					if (match) {
+						found = match._id;
+						pushLog('Session polled', `Found session ${match._id} via API fallback (attempt ${i + 1})`);
+						resolveSessionWaiters(correlationId, match._id);
+						break;
 					}
-					: current
-			);
-			onSessionCreated(createdSessionId, nextPlateNumber);
-
-			const slotResult = await assignParkingSlot(
-				createdSessionId,
-				{
-					correlation_id: correlationId
-				},
-				getSimulatorApiKey()
-			);
-			setDbSlotCode(slotResult.slot.slot_code);
-			setActiveVehicle((current) =>
-				current
-					? {
-						...current,
-						dbSlotCode: slotResult.slot.slot_code
-					}
-					: current
-			);
-			pushLog('Slot assigned', `Real DB slot ${slotResult.slot.slot_code} reserved for session ${createdSessionId}`);
-			setResult(`Database slot assigned: ${slotResult.slot.slot_code}`);
-
-			setStage('entry_processing');
-
-			pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
-			await wait(STAGE_TRAVEL_MS);
-			setStage('assigned_slot');
-			pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
-			await wait(STAGE_TRAVEL_MS);
-			setStage('parked');
-			setParkedVehicles((current) => [
-				...current,
-				{
-					localId: correlationId,
-					sessionId: createdSessionId,
-					plateNumber: nextPlateNumber,
-					dbSlotCode: slotResult.slot.slot_code,
-					sceneSlotId: selectedSceneSlotId,
-					vehicleType: persistedVehicleType
+				} catch {
+					// tiếp tục poll
 				}
-			]);
-			setActiveVehicle(null);
-			pushLog('Vehicle parked', `Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
-			setResult(`Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
-			clearInputFields();
-		} catch (error) {
-			setResult(error instanceof Error ? error.message : 'Entry simulation failed');
-			pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
-			setActiveVehicle(null);
-			setDbSlotCode('');
-			setStage('idle');
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const simulateExit = async (vehicle: ParkedVehicle) => {
-		if (busy || hydrating) {
-			return;
-		}
-
-		if (!vehicle.sessionId) {
-			setResult('Vehicle session is missing for exit simulation');
-			return;
-		}
-
-		const remainingVehicles = parkedVehicles.filter((item) => item.localId !== vehicle.localId);
-
-		setBusy(true);
-		setActiveVehicle(vehicle);
-		removeParkedVehicle(vehicle.localId);
-		setStage('approaching_exit');
-		setSessionId(vehicle.sessionId);
-		setPlateNumber(vehicle.plateNumber);
-		setDbSlotCode(vehicle.dbSlotCode);
-		if (!isRealtimeGateSyncActive()) {
-			applyGateState('exit-gate', 'closed');
-		}
-		pushLog('Vehicle leaving slot', `${vehicle.plateNumber} leaving scene slot ${vehicle.sceneSlotId}`);
-
-		try {
-			await wait(STAGE_TRAVEL_MS);
-			const correlationId = activeCorrelationIdRef.current || crypto.randomUUID();
-			activeCorrelationIdRef.current = correlationId;
-			const exitResult = await completeSimulatorParkingExit({
-				sessionId: vehicle.sessionId,
-				exitPlateNumber: vehicle.plateNumber,
-				paymentStatus: 'pending',
-				correlationId
-			});
-
-			if (exitResult.gate_action !== 'open') {
-				throw new Error(exitResult.session.is_plate_mismatch ? 'Biển số không khớp, xe bị từ chối' : 'Xe chưa thể rời bãi');
 			}
+			if (!found) {
+				throw new Error('Timeout: session not created after gate open');
+			}
+			createdSessionId = found;
+		}
 
-			pushLog('Exit persisted', `Transaction stored for session ${vehicle.sessionId}`);
-			setResult(
-				`Exit persisted: ${exitResult.transaction.payment_status} / ${exitResult.transaction.final_amount}`
+		setSessionId(createdSessionId);
+		setActiveVehicle((current) =>
+			current ? { ...current, sessionId: createdSessionId } : current
+		);
+		onSessionCreated(createdSessionId, nextPlateNumber);
+
+		const slotResult = await assignParkingSlot(
+			createdSessionId,
+			{ correlation_id: correlationId },
+			getSimulatorApiKey()
+		);
+		setDbSlotCode(slotResult.slot.slot_code);
+		setActiveVehicle((current) =>
+			current ? { ...current, dbSlotCode: slotResult.slot.slot_code } : current
+		);
+		pushLog('Slot assigned', `DB slot ${slotResult.slot.slot_code} for session ${createdSessionId}`);
+		setResult(`Database slot assigned: ${slotResult.slot.slot_code}`);
+
+		setStage('entry_processing');
+		pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
+		await waitForStagePath('entry_processing');
+
+		setStage('assigned_slot');
+		pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
+		await waitForStagePath('assigned_slot');
+
+		setStage('parked');
+		setParkedVehicles((current) => [
+			...current,
+			{
+				localId: correlationId,
+				sessionId: createdSessionId,
+				plateNumber: nextPlateNumber,
+				dbSlotCode: slotResult.slot.slot_code,
+				sceneSlotId: selectedSceneSlotId,
+				vehicleType: persistedVehicleType
+			}
+		]);
+		setActiveVehicle(null);
+		pushLog('Vehicle parked', `Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+		setResult(`Vehicle parked in DB slot ${slotResult.slot.slot_code}`);
+		clearInputFields();
+	} catch (error) {
+		setResult(error instanceof Error ? error.message : 'Entry simulation failed');
+		pushLog('Entry error', error instanceof Error ? error.message : 'Unknown error');
+		setActiveVehicle(null);
+		setDbSlotCode('');
+		setStage('idle');
+	} finally {
+		setBusy(false);
+	}
+};
+
+const simulateExit = async (vehicle: ParkedVehicle) => {
+	if (busy || hydrating) return;
+
+	if (!vehicle.sessionId) {
+		setResult('Vehicle session is missing for exit simulation');
+		return;
+	}
+
+	const remainingVehicles = parkedVehicles.filter((item) => item.localId !== vehicle.localId);
+
+	setBusy(true);
+	setActiveVehicle(vehicle);
+	removeParkedVehicle(vehicle.localId);
+	setStage('approaching_exit');
+	currentRfidCheckpointRef.current = 'exit_rfid';
+	setSessionId(vehicle.sessionId);
+	setPlateNumber(vehicle.plateNumber);
+	setDbSlotCode(vehicle.dbSlotCode);
+
+	if (!isRealtimeGateSyncActive()) {
+		applyGateState('exit-gate', 'closed');
+	}
+
+	pushLog('Vehicle leaving slot', `${vehicle.plateNumber} leaving scene slot ${vehicle.sceneSlotId}`);
+
+	try {
+		// Bước 1: chờ 3D scene xe di chuyển từ slot ra đến exit checkpoint
+		await waitForStagePath('approaching_exit');
+
+		const correlationId = crypto.randomUUID();
+		activeCorrelationIdRef.current = correlationId;
+
+		// Bước 2: xe dừng tại exit checkpoint, chờ quét RFID
+		setStage('waiting_rfid');
+		currentRfidCheckpointRef.current = 'exit_rfid';
+		setResult('Xe đang chờ quét thẻ RFID tại cổng ra');
+		pushLog('Vehicle stopped', 'Xe dừng tại exit checkpoint, chờ quét RFID');
+
+		// Notify backend xe đã đến exit checkpoint
+		await notifyCheckpoint('exit_rfid', vehicle.plateNumber, vehicle.sessionId, correlationId);
+
+		// Bước 3: chờ operator/backend xác nhận RFID → mở gate
+		// Gate chỉ mở sau khi backend xác nhận RFID hợp lệ
+		if (isRealtimeGateSyncActive()) {
+			setResult('Chờ operator xác nhận và mở cổng ra...');
+			pushLog('RFID wait', 'Chờ ESP32 quét thẻ và backend xác nhận');
+			await waitForGateOpen('exit-gate');
+			pushLog('Barrier opened', 'Cổng ra mở sau khi RFID được xác nhận');
+		} else {
+			applyGateState('exit-gate', 'open');
+			pushLog('Barrier opened', 'Cổng ra mở (local mode)');
+		}
+
+		// Bước 4: hoàn thành session trong DB ngay khi gate mở
+		// Không chờ gate đóng — gate đóng do xe đi qua barrier trigger handleExitBarrierPassed
+		const exitResult = await completeSimulatorParkingExit({
+			sessionId: vehicle.sessionId,
+			exitPlateNumber: vehicle.plateNumber,
+			paymentStatus: 'pending',
+			correlationId
+		});
+
+		if (exitResult.gate_action !== 'open') {
+			throw new Error(
+				exitResult.session.is_plate_mismatch
+					? 'Biển số không khớp, xe bị từ chối'
+					: 'Xe chưa thể rời bãi'
 			);
-
-			await notifyCheckpoint('exit_rfid', vehicle.plateNumber, vehicle.sessionId, correlationId);
-
-			if (isRealtimeGateSyncActive()) {
-				setResult('Waiting for backend gate state');
-				pushLog('Gate awaiting socket', 'Waiting for backend signal to open exit gate');
-				await waitForGateOpen('exit-gate');
-				pushLog('Barrier opened', 'Exit gate opened via backend API event');
-			} else {
-				applyGateState('exit-gate', 'open');
-				pushLog('Barrier opened', 'Exit gate lifted after check-out');
-			}
-			setStage('exit_processing');
-			await wait(EXIT_STAGE_TRAVEL_MS);
-			setResult(`Vehicle exited from DB slot ${vehicle.dbSlotCode || 'released'}`);
-			setStage(remainingVehicles.length > 0 ? 'parked' : 'completed');
-			setActiveVehicle(null);
-			pushLog('Simulation completed', 'Vehicle exited and slot released');
-			clearInputFields();
-		} catch (error) {
-			setResult(error instanceof Error ? error.message : 'Exit simulation failed');
-			pushLog('Exit error', error instanceof Error ? error.message : 'Unknown error');
-			setActiveVehicle(null);
-			setParkedVehicles((current) => [...current, vehicle].sort((left, right) => left.sceneSlotId - right.sceneSlotId));
-			setStage('parked');
-		} finally {
-			setBusy(false);
 		}
-	};
+
+		pushLog('Exit persisted', `Lưu transaction cho session ${vehicle.sessionId}`);
+		setResult(
+			`Exit OK: ${exitResult.transaction.payment_status} / ${exitResult.transaction.final_amount}`
+		);
+
+		// Bước 5: xe đi qua barrier → handleExitBarrierPassed đóng gate
+		// chờ 3D scene animate xe ra ngoài hoàn toàn
+		setStage('exit_processing');
+		pushLog('Vehicle exiting', 'Xe đang đi qua cổng ra');
+		await waitForStagePath('exit_processing');
+
+		setResult(`Xe đã ra khỏi bãi từ slot ${vehicle.dbSlotCode || 'released'}`);
+		setStage(remainingVehicles.length > 0 ? 'parked' : 'completed');
+		setActiveVehicle(null);
+		pushLog('Simulation completed', 'Xe đã ra khỏi bãi, slot được giải phóng');
+		clearInputFields();
+	} catch (error) {
+		setResult(error instanceof Error ? error.message : 'Exit simulation failed');
+		pushLog('Exit error', error instanceof Error ? error.message : 'Unknown error');
+		setActiveVehicle(null);
+		setParkedVehicles((current) =>
+			[...current, vehicle].sort((a, b) => a.sceneSlotId - b.sceneSlotId)
+		);
+		setStage('parked');
+	} finally {
+		setBusy(false);
+	}
+};
+
+// const simulateExit = async (vehicle: ParkedVehicle) => {
+// 	if (busy || hydrating) return;
+
+// 	if (!vehicle.sessionId) {
+// 		setResult('Vehicle session is missing for exit simulation');
+// 		return;
+// 	}
+
+// 	const remainingVehicles = parkedVehicles.filter((item) => item.localId !== vehicle.localId);
+
+// 	setBusy(true);
+// 	setActiveVehicle(vehicle);
+// 	removeParkedVehicle(vehicle.localId);
+// 	setStage('approaching_exit');
+// 	currentRfidCheckpointRef.current = 'exit_rfid';
+// 	setSessionId(vehicle.sessionId);
+// 	setPlateNumber(vehicle.plateNumber);
+// 	setDbSlotCode(vehicle.dbSlotCode);
+// 	if (!isRealtimeGateSyncActive()) {
+// 		applyGateState('exit-gate', 'closed');
+// 	}
+// 	pushLog('Vehicle leaving slot', `${vehicle.plateNumber} leaving scene slot ${vehicle.sceneSlotId}`);
+
+// 	try {
+// 		// Bước 1: chờ xe di chuyển ra cổng exit
+// 		await waitForStagePath('approaching_exit');
+
+// 		const correlationId = crypto.randomUUID();
+// 		activeCorrelationIdRef.current = correlationId;
+
+// 		// Bước 2: xe dừng tại checkpoint, chờ RFID scan
+// 		setStage('waiting_rfid');
+// 		currentRfidCheckpointRef.current = 'exit_rfid';
+// 		setResult('Vehicle reached exit checkpoint, waiting for RFID scan');
+// 		pushLog('Vehicle stopped', 'Waiting for exit RFID scan at exit checkpoint');
+
+// 		// Notify backend xe đã đến exit checkpoint
+// 		await notifyCheckpoint('exit_rfid', vehicle.plateNumber, vehicle.sessionId, correlationId);
+
+// 		// Bước 3: chờ operator/backend xác nhận → mở gate
+// 		if (isRealtimeGateSyncActive()) {
+// 			setResult('Waiting for operator to open exit gate');
+// 			pushLog('Gate awaiting socket', 'Waiting for operator to open exit gate');
+// 			await waitForGateOpen('exit-gate');
+// 			pushLog('Barrier opened', 'Exit gate opened via backend event');
+// 		} else {
+// 			applyGateState('exit-gate', 'open');
+// 			pushLog('Barrier opened', 'Exit gate lifted locally');
+// 		}
+
+// 		// Bước 4: hoàn thành exit trong DB ngay khi gate mở
+// 		// Không chờ gate đóng vì gate đóng do 3D scene trigger sau khi xe qua
+// 		const exitResult = await completeSimulatorParkingExit({
+// 			sessionId: vehicle.sessionId,
+// 			exitPlateNumber: vehicle.plateNumber,
+// 			paymentStatus: 'pending',
+// 			correlationId
+// 		});
+
+// 		if (exitResult.gate_action !== 'open') {
+// 			throw new Error(
+// 				exitResult.session.is_plate_mismatch
+// 					? 'Biển số không khớp, xe bị từ chối'
+// 					: 'Xe chưa thể rời bãi'
+// 			);
+// 		}
+
+// 		pushLog('Exit persisted', `Transaction stored for session ${vehicle.sessionId}`);
+// 		setResult(
+// 			`Exit persisted: ${exitResult.transaction.payment_status} / ${exitResult.transaction.final_amount}`
+// 		);
+
+// 		// Bước 5: chờ 3D scene xe đi qua barrier (trigger handleExitBarrierPassed → gate close)
+// 		setStage('exit_processing');
+// 		pushLog('Vehicle exiting', 'Vehicle passing through exit gate');
+// 		await waitForStagePath('exit_processing');
+
+// 		setResult(`Vehicle exited from DB slot ${vehicle.dbSlotCode || 'released'}`);
+// 		setStage(remainingVehicles.length > 0 ? 'parked' : 'completed');
+// 		setActiveVehicle(null);
+// 		pushLog('Simulation completed', 'Vehicle exited and slot released');
+// 		clearInputFields();
+// 	} catch (error) {
+// 		setResult(error instanceof Error ? error.message : 'Exit simulation failed');
+// 		pushLog('Exit error', error instanceof Error ? error.message : 'Unknown error');
+// 		setActiveVehicle(null);
+// 		setParkedVehicles((current) =>
+// 			[...current, vehicle].sort((a, b) => a.sceneSlotId - b.sceneSlotId)
+// 		);
+// 		setStage('parked');
+// 	} finally {
+// 		setBusy(false);
+// 	}
+// };
 
 	const handleEntryBarrierPassed = () => {
 		if (isRealtimeGateSyncActive()) {
@@ -1019,6 +1403,10 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		setPlateNumber('');
 	};
 
+	const handleStagePathCompleted = (completedStage: SimulatorStage) => {
+		resolveStagePathWaiters(completedStage);
+	};
+
 	return (
 		<section className="panel simulator-panel">
 			<header className="panel-head">
@@ -1044,12 +1432,14 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 							activePlateNumber={activeVehicle?.plateNumber || ''}
 							activeVehicleType={activeVehicle?.vehicleType || vehicleType}
 							activeSceneSlotId={activeVehicle ? String(activeVehicle.sceneSlotId) : ''}
+							rfidCheckpoint={currentRfidCheckpointRef.current}
 							parkedVehicles={parkedVehicles}
 							entryGateOpen={entryGateOpen}
 							exitGateOpen={exitGateOpen}
 							onParkedCarClick={handleParkedCarClick}
 							onEntryBarrierPassed={handleEntryBarrierPassed}
 							onExitBarrierPassed={handleExitBarrierPassed}
+							onStagePathCompleted={handleStagePathCompleted}
 						/>
 					</Suspense>
 

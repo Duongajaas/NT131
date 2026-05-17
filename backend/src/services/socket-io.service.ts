@@ -23,6 +23,21 @@ interface SimulatorCheckpointPayload {
 	sessionId?: string;
 }
 
+interface SimulatorStagePayload {
+	stage: string;
+	plateNumber?: string;
+	checkpoint?: 'entry_rfid' | 'exit_rfid';
+	correlationId?: string;
+	sessionId?: string;
+}
+
+interface HardwareRfidScanPayload {
+	uid: string;
+	checkpoint?: 'entry_rfid' | 'exit_rfid';
+	correlationId?: string;
+	sessionId?: string;
+}
+
 type JoinedRoom = 'operator' | 'simulator' | 'hardware';
 type GateCommandSource = Exclude<GateCommand['requestedBy'], 'backend'>;
 
@@ -267,7 +282,6 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 
 	ioServer.use(async (socket, next) => {
 		const token = getSocketToken(socket);
-		// console.log('Socket authentication attempt', { token: token ? '***' : null, socketId: socket.id });
 		if (!token) {
 			return next();
 		}
@@ -450,6 +464,55 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 		});
 
 		socket.on(
+			'hardware.rfid.scan',
+			(payload: HardwareRfidScanPayload, ack?: (value: unknown) => void) => {
+				if (!socket.rooms.has('hardware')) {
+					logger.warn('Hardware RFID scan rejected', {
+						socketId: socket.id,
+						reason: 'Hardware room is required'
+					});
+					ack?.({ success: false, message: 'Hardware room is required' });
+					return;
+				}
+
+				if (!payload?.uid || payload.uid.trim().length === 0) {
+					logger.warn('Hardware RFID scan rejected', {
+						socketId: socket.id,
+						reason: 'uid is required'
+					});
+					ack?.({ success: false, message: 'uid is required' });
+					return;
+				}
+
+				const normalizedUid = payload.uid.trim().toUpperCase();
+				const checkpoint = payload.checkpoint === 'exit_rfid' ? 'exit_rfid' : 'entry_rfid';
+				const correlationId = payload.correlationId ?? randomUUID();
+
+				logger.info('Hardware RFID scan received', {
+					socketId: socket.id,
+					uid: normalizedUid,
+					checkpoint,
+					sessionId: payload.sessionId,
+					correlationId
+				});
+
+				publishRealtimeEvent({
+					eventName: 'rfid.scan.requested',
+					source: 'hardware-gateway',
+					correlationId,
+					sessionId: payload.sessionId,
+					payload: {
+						uid: normalizedUid,
+						checkpoint,
+						status: 'requested'
+					}
+				});
+
+				ack?.({ success: true, correlationId });
+			}
+		);
+
+		socket.on(
 			'operator.gate.command.request',
 			async (payload: GateCommandRequestPayload, ack?: (value: unknown) => void) => {
 				if (!socket.data.user || !['admin', 'operator'].includes(socket.data.user.role)) {
@@ -544,6 +607,46 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 						plateNumber: payload.plateNumber.trim().toUpperCase(),
 						state: payload.state ?? 'arrived',
 						status: payload.state ?? 'arrived'
+					}
+				});
+
+				ack?.({ success: true, correlationId });
+			}
+		);
+
+		socket.on(
+			'simulator.stage.changed',
+			(payload: SimulatorStagePayload, ack?: (value: unknown) => void) => {
+				if (!socket.rooms.has('simulator')) {
+					logger.warn('Simulator stage event rejected', {
+						socketId: socket.id,
+						reason: 'Simulator room is required'
+					});
+					ack?.({ success: false, message: 'Simulator room is required' });
+					return;
+				}
+
+				if (!payload?.stage || payload.stage.trim().length === 0) {
+					logger.warn('Simulator stage event rejected', {
+						socketId: socket.id,
+						reason: 'stage is required'
+					});
+					ack?.({ success: false, message: 'stage is required' });
+					return;
+				}
+
+				const normalizedStage = payload.stage.trim();
+				const correlationId = payload.correlationId ?? randomUUID();
+
+				publishRealtimeEvent({
+					eventName: 'simulator.stage.changed',
+					source: 'simulator',
+					correlationId,
+					sessionId: payload.sessionId,
+					payload: {
+						stage: normalizedStage,
+						plateNumber: payload.plateNumber?.trim().toUpperCase(),
+						checkpoint: payload.checkpoint
 					}
 				});
 

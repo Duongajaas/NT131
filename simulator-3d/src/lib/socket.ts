@@ -105,6 +105,14 @@ export interface SimulatorCheckpointPayload {
 	sessionId?: string;
 }
 
+export interface SimulatorStagePayload {
+	stage: string;
+	plateNumber?: string;
+	checkpoint?: 'entry_rfid' | 'exit_rfid';
+	correlationId?: string;
+	sessionId?: string;
+}
+
 export const emitSimulatorCheckpoint = (
 	socketRef: Socket,
 	payload: SimulatorCheckpointPayload
@@ -120,6 +128,26 @@ export const emitSimulatorCheckpoint = (
 				}
 
 				reject(new Error(ack.message || 'Failed to emit simulator checkpoint'));
+			}
+		);
+	});
+};
+
+export const emitSimulatorStage = (
+	socketRef: Socket,
+	payload: SimulatorStagePayload
+) => {
+	return new Promise<{ correlationId?: string }>((resolve, reject) => {
+		socketRef.emit(
+			'simulator.stage.changed',
+			payload,
+			(ack: { success: boolean; message?: string; correlationId?: string }) => {
+				if (ack.success) {
+					resolve({ correlationId: ack.correlationId });
+					return;
+				}
+
+				reject(new Error(ack.message || 'Failed to emit simulator stage'));
 			}
 		);
 	});

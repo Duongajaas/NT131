@@ -1,38 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EventFeed } from './event-feed';
 import {
-	completeParkingExit,
 	createParkingEntry,
 	listParkingSlots,
-	type VerifyRfidResult,
 	verifyRfidPlate
 } from '../api/parking.api';
-import { createRfidCard, listRfidCards } from '../api/rfid-card.api';
-import { getResidentById } from '../api/resident.api';
-import { createVehicle, getVehicleById, listVehicles } from '../api/vehicle.api';
+import { listRfidCards } from '../api/rfid-card.api';
+import { getVehicleById } from '../api/vehicle.api';
 import { getSocket, requestManualGateCommand } from '../lib/socket';
-import { notifyError, notifyInfo, notifySuccess } from '../lib/toast';
+import { notifyError, notifySuccess } from '../lib/toast';
 import { useOperatorStore } from '../store/operator-store';
-import type {
-	ParkingSlotRecord,
-	RealtimeEnvelope,
-	ResidentRecord,
-	RfidCardRecord,
-	VehicleRecord
-} from '../types/contracts';
+import type { ParkingSlotRecord, RealtimeEnvelope } from '../types/contracts';
 
 interface OperatorDashboardProps {
 	token: string;
-}
-
-type OwnerType = 'resident' | 'guest' | 'unknown';
-
-interface OwnershipLookupResult {
-	ownerType: OwnerType;
-	message: string;
-	card?: RfidCardRecord;
-	vehicle?: VehicleRecord;
-	resident?: ResidentRecord;
 }
 
 interface VehicleStatePayload {
@@ -40,6 +21,8 @@ interface VehicleStatePayload {
 	plateNumber?: string;
 	state?: string;
 }
+
+type PlateMatchStatus = 'neutral' | 'good' | 'danger';
 
 const normalizeText = (value: string) => value.trim().toUpperCase();
 
@@ -53,35 +36,11 @@ const parseVehicleStatePayload = (event: RealtimeEnvelope | undefined): VehicleS
 };
 
 export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
-	const [uid, setUid] = useState('');
-	const [observedPlate, setObservedPlate] = useState('');
-	const [verificationResult, setVerificationResult] = useState<VerifyRfidResult | null>(null);
-
-	const [lookupUid, setLookupUid] = useState('');
-	const [lookupBusy, setLookupBusy] = useState(false);
-	const [lookupResult, setLookupResult] = useState<OwnershipLookupResult | null>(null);
-
-	const [guestUid, setGuestUid] = useState('');
-	const [guestPlate, setGuestPlate] = useState('');
-	const [guestVehicleType, setGuestVehicleType] = useState<'motorbike' | 'car'>('car');
-	const [guestBusy, setGuestBusy] = useState(false);
-
-	const [paymentSessionId, setPaymentSessionId] = useState('');
-	const [paymentExitPlate, setPaymentExitPlate] = useState('');
-	const [amountReceived, setAmountReceived] = useState('0');
-	const [paymentBusy, setPaymentBusy] = useState(false);
 	const [slotBusy, setSlotBusy] = useState(false);
 	const [manualGateBusy, setManualGateBusy] = useState(false);
+	const [expectedPlateByUid, setExpectedPlateByUid] = useState('');
+	const [autoEntryBusy, setAutoEntryBusy] = useState(false);
 	const [slotRows, setSlotRows] = useState<ParkingSlotRecord[]>([]);
-	const [lastPayment, setLastPayment] = useState<
-		| {
-			due: number;
-			received: number;
-			change: number;
-			status: string;
-		  }
-		| undefined
-	>();
 
 	const events = useOperatorStore((state) => state.events);
 	const sessions = useOperatorStore((state) => state.sessions);
@@ -119,7 +78,44 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	const latestExitDetectedPlate = latestExitVehicleEvent
 		? parseVehicleStatePayload(latestExitVehicleEvent).plateNumber || ''
 		: '';
+	const latestRfidEvent = useMemo(
+		() =>
+			events.find((event) => {
+				if (
+					event.eventName !== 'hardware.rfid.scan' &&
+					event.eventName !== 'rfid.scan.requested' &&
+					event.eventName !== 'rfid.scan.accepted' &&
+					event.eventName !== 'rfid.scan.rejected'
+				) {
+					return false;
+				}
+
+				const payload = (event.payload ?? {}) as Record<string, unknown>;
+				return typeof payload.uid === 'string' && payload.uid.length > 0;
+			}),
+		[events]
+	);
+	const latestScannedUid = useMemo(() => {
+		const payload = (latestRfidEvent?.payload ?? {}) as Record<string, unknown>;
+		return typeof payload.uid === 'string' ? normalizeText(payload.uid) : '';
+	}, [latestRfidEvent]);
 	const latestEntryCorrelationId = latestEntryVehicleEvent?.correlationId;
+	const normalizedExpectedPlateByUid = normalizeText(expectedPlateByUid || '');
+	const lastAutoEntryKeyRef = useRef('');
+
+	const resolvePlateMatchStatus = (plateValue: string): PlateMatchStatus => {
+		const normalizedPlate = normalizeText(plateValue || '');
+		if (!normalizedPlate || !normalizedExpectedPlateByUid) {
+			return 'neutral';
+		}
+
+		return normalizedPlate === normalizedExpectedPlateByUid ? 'good' : 'danger';
+	};
+
+	const entryPlateForMatch = latestDetectedPlate;
+	const normalizedEntryPlateForMatch = normalizeText(entryPlateForMatch || '');
+	const entryPlateMatchStatus = resolvePlateMatchStatus(entryPlateForMatch);
+	const exitPlateMatchStatus = resolvePlateMatchStatus(latestExitDetectedPlate);
 
 	const [lastSlotEventId, setLastSlotEventId] = useState('');
 	const occupiedSlots = useMemo(
@@ -166,14 +162,6 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [events, lastSlotEventId]);
 
-	useEffect(() => {
-		if (!latestDetectedPlate || observedPlate) {
-			return;
-		}
-
-		setObservedPlate(latestDetectedPlate);
-	}, [latestDetectedPlate, observedPlate]);
-
 	const runAction = async (task: () => Promise<void>) => {
 		try {
 			await task();
@@ -182,36 +170,63 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		}
 	};
 
-	const clearOperatorInputs = (section: 'entry' | 'guest' | 'payment' | 'lookup' | 'all') => {
-		if (section === 'entry' || section === 'all') {
-			setUid('');
-			setObservedPlate('');
-			setVerificationResult(null);
+	const findVehiclePlateByUid = async (uidValue: string) => {
+		const normalizedUid = normalizeText(uidValue);
+		if (!normalizedUid) {
+			return null;
 		}
-		if (section === 'guest' || section === 'all') {
-			setGuestUid('');
-			setGuestPlate('');
+
+		const cards = await listRfidCards({ token }, { search: normalizedUid });
+		const exactCard = cards.find((item) => normalizeText(item.uid) === normalizedUid);
+		const containsCard = cards.find((item) => normalizeText(item.uid).includes(normalizedUid));
+		const matchedCard = exactCard || containsCard;
+
+		if (!matchedCard) {
+			return null;
 		}
-		if (section === 'payment' || section === 'all') {
-			setPaymentSessionId('');
-			setPaymentExitPlate('');
-			setAmountReceived('0');
-		}
-		if (section === 'lookup' || section === 'all') {
-			setLookupUid('');
-		}
+
+		const vehicle = await getVehicleById(matchedCard.vehicle_id, { token });
+		return normalizeText(vehicle.plate_number);
 	};
 
-	const processEntry = async (correlationId?: string) => {
-		if (!uid || !observedPlate) {
-			notifyError('Cần nhập UID và biển số để tạo phiên vào bãi');
+	useEffect(() => {
+		const normalizedUid = normalizeText(latestScannedUid);
+		if (!normalizedUid) {
+			setExpectedPlateByUid('');
+			return;
+		}
+
+		let cancelled = false;
+		const timer = window.setTimeout(() => {
+			void findVehiclePlateByUid(normalizedUid)
+				.then((plate) => {
+					if (!cancelled) {
+						setExpectedPlateByUid(plate || '');
+					}
+				})
+				.catch(() => {
+					if (!cancelled) {
+						setExpectedPlateByUid('');
+					}
+				});
+		}, 300);
+
+		return () => {
+			cancelled = true;
+			window.clearTimeout(timer);
+		};
+	}, [latestScannedUid, token]);
+
+	const processEntry = async (uidValue: string, observedPlateValue: string, correlationId?: string) => {
+		if (!uidValue || !observedPlateValue) {
+			notifyError('Thiếu UID hoặc biển số camera để tạo phiên vào bãi');
 			return null;
 		}
 
 		const response = await createParkingEntry(
 			{
-				uid,
-				plate_number: normalizeText(observedPlate),
+				uid: uidValue,
+				plate_number: normalizeText(observedPlateValue),
 				plate_confidence: 95,
 				correlation_id: correlationId || latestEntryCorrelationId || crypto.randomUUID()
 			},
@@ -219,10 +234,9 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		);
 
 		upsertSession(response.session);
-		setPaymentSessionId(response.session._id);
 		void loadParkingSlots();
 		notifySuccess(`Đã tạo phiên: ${response.gate_action.toUpperCase()} (${response.session._id})`);
-		clearOperatorInputs('entry');
+		lastAutoEntryKeyRef.current = '';
 		return response;
 	};
 
@@ -252,186 +266,75 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		}
 	};
 
-	const handleVerifyRfid = async () => {
-		if (!uid || !observedPlate) {
-			notifyError('Cần nhập UID và biển số quan sát để kiểm tra RFID');
+	const runVerifyAndProcessEntry = async ({
+		uidValue,
+		observedPlateValue,
+		correlationId,
+		auto
+	}: {
+		uidValue: string;
+		observedPlateValue: string;
+		correlationId: string;
+		auto: boolean;
+	}) => {
+		const result = await verifyRfidPlate(
+			{
+				uid: uidValue,
+				observed_plate_number: observedPlateValue,
+				correlation_id: correlationId
+			},
+			{ token }
+		);
+
+		if (result.decision === 'accepted') {
+			setExpectedPlateByUid(normalizeText(result.expected_plate_number || expectedPlateByUid));
+			if (auto) {
+				notifySuccess('RFID + biển số khớp, đã tự động xác nhận vào bãi');
+			}
+			await processEntry(uidValue, observedPlateValue, correlationId);
 			return;
 		}
 
-		await runAction(async () => {
-			const correlationId = latestEntryCorrelationId || crypto.randomUUID();
-			const result = await verifyRfidPlate(
-				{
-					uid,
-					observed_plate_number: normalizeText(observedPlate),
-					correlation_id: correlationId
-				},
-				{ token }
-			);
+		notifyError(
+			`Kiểm tra RFID: ${result.decision.toUpperCase()} - expected ${result.expected_plate_number || 'N/A'}`
+		);
+	};
 
-			setVerificationResult(result);
-			if (result.decision === 'accepted') {
-				notifySuccess(
-					`Kiểm tra RFID: ${result.decision.toUpperCase()} - expected ${result.expected_plate_number || 'N/A'}`
-				);
-				await processEntry(correlationId);
-				return;
-			}
+	useEffect(() => {
+		if (!latestScannedUid || !normalizedExpectedPlateByUid || !normalizedEntryPlateForMatch) {
+			return;
+		}
 
-			notifyError(
-				`Kiểm tra RFID: ${result.decision.toUpperCase()} - expected ${result.expected_plate_number || 'N/A'}`
-			);
+		if (normalizedExpectedPlateByUid !== normalizedEntryPlateForMatch) {
+			return;
+		}
+
+		const normalizedUid = latestScannedUid;
+		const correlationId = latestEntryCorrelationId || crypto.randomUUID();
+		const triggerKey = `${normalizedUid}|${normalizedEntryPlateForMatch}|${correlationId}`;
+		if (autoEntryBusy || lastAutoEntryKeyRef.current === triggerKey) {
+			return;
+		}
+
+		lastAutoEntryKeyRef.current = triggerKey;
+		setAutoEntryBusy(true);
+		void runAction(async () => {
+			await runVerifyAndProcessEntry({
+				uidValue: normalizedUid,
+				observedPlateValue: normalizedEntryPlateForMatch,
+				correlationId,
+				auto: true
+			});
+		}).finally(() => {
+			setAutoEntryBusy(false);
 		});
-	};
-
-	const handleProcessEntry = async () => {
-		await runAction(async () => {
-			await processEntry();
-		});
-	};
-
-	const lookupCardOwnership = async () => {
-		const normalizedUid = normalizeText(lookupUid);
-		if (!normalizedUid) {
-			notifyError('Nhập UID cần tra cứu');
-			return;
-		}
-
-		setLookupBusy(true);
-		setLookupResult(null);
-
-		try {
-			const cards = await listRfidCards({ token }, { search: normalizedUid });
-			const card = cards.find((item) => normalizeText(item.uid) === normalizedUid);
-
-			if (!card) {
-				setLookupResult({
-					ownerType: 'unknown',
-					message: 'UID chưa có trong hệ thống. Có thể cấp thẻ khách vãng lai.'
-				});
-				notifyInfo('UID chưa có trong hệ thống. Có thể cấp thẻ khách vãng lai.');
-				return;
-			}
-
-			const vehicle = await getVehicleById(card.vehicle_id, { token });
-			if (card.card_type === 'guest' || !vehicle.resident_id) {
-				setLookupResult({
-					ownerType: 'guest',
-					message: 'Thẻ thuộc nhóm khách vãng lai',
-					card,
-					vehicle
-				});
-				notifySuccess('Thẻ thuộc nhóm khách vãng lai');
-				return;
-			}
-
-			const resident = await getResidentById(vehicle.resident_id, { token });
-			setLookupResult({
-				ownerType: 'resident',
-				message: 'Thẻ thuộc cư dân',
-				card,
-				vehicle,
-				resident
-			});
-			notifySuccess('Thẻ thuộc cư dân');
-			clearOperatorInputs('lookup');
-		} catch (lookupError) {
-			notifyError(lookupError instanceof Error ? lookupError.message : 'Tra cứu RFID thất bại');
-		} finally {
-			setLookupBusy(false);
-		}
-	};
-
-	const issueGuestCard = async () => {
-		if (!guestUid || !guestPlate) {
-			notifyError('Nhập UID và biển số để cấp thẻ khách');
-			return;
-		}
-
-		setGuestBusy(true);
-		try {
-			const normalizedGuestPlate = normalizeText(guestPlate);
-			const existingVehicles = await listVehicles({ token }, { search: normalizedGuestPlate });
-			const existingVehicle = existingVehicles.find(
-				(item) => normalizeText(item.plate_number) === normalizedGuestPlate
-			);
-			const vehicle =
-				existingVehicle ??
-				(await createVehicle(
-					{
-						vehicle_type: guestVehicleType,
-						plate_number: normalizedGuestPlate
-					},
-					{ token }
-				));
-
-			const card = await createRfidCard(
-				{
-					uid: normalizeText(guestUid),
-					vehicle_id: vehicle._id,
-					card_type: 'guest',
-					is_active: true
-				},
-				{ token }
-			);
-
-			setLookupResult({
-				ownerType: 'guest',
-				message: 'Đã cấp thẻ khách vãng lai thành công',
-				card,
-				vehicle
-			});
-			setUid(card.uid);
-			setObservedPlate(vehicle.plate_number);
-			notifySuccess(`Đã cấp thẻ khách UID ${card.uid} cho xe ${vehicle.plate_number}`);
-			await processEntry(latestEntryCorrelationId || undefined);
-			clearOperatorInputs('guest');
-		} catch (issueError) {
-			notifyError(issueError instanceof Error ? issueError.message : 'Cấp thẻ khách thất bại');
-		} finally {
-			setGuestBusy(false);
-		}
-	};
-
-	const collectGuestPayment = async () => {
-		if (!paymentSessionId || !paymentExitPlate) {
-			notifyError('Nhập session id và biển số khi ra để thu phí');
-			return;
-		}
-
-		setPaymentBusy(true);
-		try {
-			const response = await completeParkingExit(
-				paymentSessionId,
-				{
-					exit_plate_number: normalizeText(paymentExitPlate),
-					payment_status: 'paid',
-					correlation_id: crypto.randomUUID()
-				},
-				{ token }
-			);
-
-			upsertSession(response.session);
-
-			const due = response.transaction.final_amount;
-			const received = Number(amountReceived);
-			const change = Number.isFinite(received) ? received - due : -due;
-			setLastPayment({
-				due,
-				received: Number.isFinite(received) ? received : 0,
-				change,
-				status: response.transaction.payment_status
-			});
-
-			notifySuccess(`Đã thu phí vãng lai: ${due.toLocaleString('vi-VN')} VND`);
-		clearOperatorInputs('payment');
-		void loadParkingSlots();
-		} catch (paymentError) {
-			notifyError(paymentError instanceof Error ? paymentError.message : 'Thu phí thất bại');
-		} finally {
-			setPaymentBusy(false);
-		}
-	};
+	}, [
+		autoEntryBusy,
+		latestEntryCorrelationId,
+		latestScannedUid,
+		normalizedEntryPlateForMatch,
+		normalizedExpectedPlateByUid
+	]);
 
 	return (
 		<section className="page-grid">
@@ -482,189 +385,30 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 				</p>
 			</section>
 
-			<section className="grid operator-workspace-grid">
-				<section className="panel operator-check-panel">
-					<header className="panel-head">
-						<h2>Chức năng vận hành cổng</h2>
-						<p>Kiểm tra RFID, xử lý khách vãng lai, thu phí và thao tác phiên vào/ra.</p>
-					</header>
-
-					<div className="split-field-grid">
-						<label className="field">
-							<span>Biển số realtime từ simulator</span>
-							<input value={latestDetectedPlate} readOnly placeholder="Đợi simulator gửi checkpoint" />
-						</label>
-						<label className="field">
-							<span>UID RFID</span>
-							<input value={uid} onChange={(event) => setUid(event.target.value)} />
-						</label>
-					</div>
-
-					<label className="field">
-						<span>Biển số quan sát để kiểm tra</span>
-						<input
-							value={observedPlate}
-							onChange={(event) => setObservedPlate(event.target.value)}
-							placeholder={latestDetectedPlate || '59A12345'}
-						/>
-					</label>
-
-					<div className="button-row">
-						<button type="button" className="btn btn-secondary" onClick={() => setObservedPlate(latestDetectedPlate)}>
-							Lấy biển số realtime
-						</button>
-						<button type="button" className="btn" onClick={handleVerifyRfid}>
-							Kiểm tra RFID
-						</button>
-						<button type="button" className="btn" onClick={handleProcessEntry}>
-							Tạo phiên vào bãi
-						</button>
-					</div>
-
-					{verificationResult ? (
-						<div
-							className={`detail-box verification-result detail-box-${
-								verificationResult.decision === 'accepted' ? 'good' : 'danger'
-							}`}
-						>
-							<p>
-								Kết quả: <strong>{verificationResult.decision.toUpperCase()}</strong>
-							</p>
-							<p>Observed: {verificationResult.observed_plate_number}</p>
-							<p>Expected: {verificationResult.expected_plate_number || 'N/A'}</p>
-							<p>Lý do: {verificationResult.reason || '-'}</p>
-						</div>
-					) : null}
-
-					<hr className="section-divider" />
-
-					<h3 className="section-title">Kiểm tra RFID cư dân/khách</h3>
-
-					<div className="split-field-grid">
-						<label className="field">
-							<span>UID cần tra cứu</span>
-							<input value={lookupUid} onChange={(event) => setLookupUid(event.target.value)} />
-						</label>
-						<div className="field">
-							<span>&nbsp;</span>
-							<button type="button" className="btn" onClick={lookupCardOwnership} disabled={lookupBusy}>
-								{lookupBusy ? 'Đang tra cứu...' : 'Tra cứu chủ thẻ'}
-							</button>
-						</div>
-					</div>
-
-					{lookupResult ? (
-						<div className="detail-box">
-							<p>
-								Loại chủ thẻ: <strong>{lookupResult.ownerType.toUpperCase()}</strong>
-							</p>
-							<p>{lookupResult.message}</p>
-							<p>UID: {lookupResult.card?.uid || '-'}</p>
-							<p>Biển số: {lookupResult.vehicle?.plate_number || '-'}</p>
-							<p>Cư dân: {lookupResult.resident?.full_name || '-'}</p>
-							<p>Căn hộ: {lookupResult.resident?.apartment_no || '-'}</p>
-						</div>
-					) : null}
-
-					<hr className="section-divider" />
-
-					<h3 className="section-title">Cấp thẻ khách vãng lai</h3>
-					<div className="split-field-grid">
-						<label className="field">
-							<span>UID khách</span>
-							<input value={guestUid} onChange={(event) => setGuestUid(event.target.value)} />
-						</label>
-						<label className="field">
-							<span>Biển số khách</span>
-							<input value={guestPlate} onChange={(event) => setGuestPlate(event.target.value)} />
-						</label>
-					</div>
-					<div className="split-field-grid">
-						<label className="field">
-							<span>Loại xe</span>
-							<select
-								value={guestVehicleType}
-								onChange={(event) =>
-									setGuestVehicleType(event.target.value as 'motorbike' | 'car')
-								}
-							>
-								<option value="car">Ô tô</option>
-								<option value="motorbike">Xe máy</option>
-							</select>
-						</label>
-						<div className="field">
-							<span>&nbsp;</span>
-							<button type="button" className="btn" onClick={issueGuestCard} disabled={guestBusy}>
-								{guestBusy ? 'Đang cấp thẻ...' : 'Cấp thẻ khách'}
-							</button>
-						</div>
-					</div>
-
-					<hr className="section-divider" />
-
-					<h3 className="section-title">Thu phí khách vãng lai</h3>
-					<div className="split-field-grid">
-						<label className="field">
-							<span>Session ID</span>
-							<input value={paymentSessionId} onChange={(event) => setPaymentSessionId(event.target.value)} />
-						</label>
-						<label className="field">
-							<span>Biển số khi ra</span>
-							<input value={paymentExitPlate} onChange={(event) => setPaymentExitPlate(event.target.value)} />
-						</label>
-					</div>
-					<div className="split-field-grid">
-						<label className="field">
-							<span>Số tiền khách đưa (VND)</span>
-							<input
-								type="number"
-								min={0}
-								value={amountReceived}
-								onChange={(event) => setAmountReceived(event.target.value)}
-							/>
-						</label>
-						<div className="field">
-							<span>&nbsp;</span>
-							<button type="button" className="btn" onClick={collectGuestPayment} disabled={paymentBusy}>
-								{paymentBusy ? 'Đang thu phí...' : 'Hoàn tất thu phí'}
-							</button>
-						</div>
-					</div>
-					{lastPayment ? (
-						<div className="detail-box">
-							<p>Phí phải thu: {lastPayment.due.toLocaleString('vi-VN')} VND</p>
-							<p>Khách đưa: {lastPayment.received.toLocaleString('vi-VN')} VND</p>
-							<p>Tiền thừa: {lastPayment.change.toLocaleString('vi-VN')} VND</p>
-							<p>Payment status: {lastPayment.status}</p>
-						</div>
-					) : null}
-				</section>
-
+			<section className="grid operator-workspace-grid operator-workspace-grid-single">
 				<section className="panel operator-plate-panel">
 					<header className="panel-head">
 						<h2>Hình ảnh biển số xe</h2>
+						<p>Nhận UID quét từ ESP32 và tự động đối chiếu biển số camera với DB.</p>
 					</header>
+					<p className="plate-preview-meta">RFID UID: {latestScannedUid || 'Chưa có dữ liệu quét'}</p>
 
 					<div className="plate-preview-stage plate-preview-grid">
 						<div className="plate-preview-frame">
 							<p className="plate-preview-head">CAMERA ENTRY</p>
 							<div className="plate-preview-center">
-								<div className="plate-visual-number">
-									{observedPlate || latestDetectedPlate || 'Chưa có xe vào'}
+								<div className={`plate-visual-number plate-visual-number-${entryPlateMatchStatus}`}>
+									{latestDetectedPlate || 'Chưa có xe vào'}
 								</div>
 							</div>
-							<p className="plate-preview-meta">
-								Detected: {latestDetectedPlate || '-'} | Observed: {observedPlate || '-'}
-							</p>
 						</div>
 						<div className="plate-preview-frame plate-preview-exit">
 							<p className="plate-preview-head">CAMERA EXIT</p>
 							<div className="plate-preview-center">
-								<div className="plate-visual-number plate-visual-number-exit">
+								<div className={`plate-visual-number plate-visual-number-${exitPlateMatchStatus}`}>
 									{latestExitDetectedPlate || 'Chưa có xe ra'}
 								</div>
 							</div>
-							<p className="plate-preview-meta">Detected: {latestExitDetectedPlate || '-'}</p>
 						</div>
 					</div>
 				</section>

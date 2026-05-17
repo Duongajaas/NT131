@@ -3,6 +3,7 @@ import {
 	connectSocket,
 	disconnectSocket,
 	emitSimulatorCheckpoint,
+	emitSimulatorStage,
 	joinSimulatorRoom,
 	requestSimulatorGateCommand,
 	subscribeRealtime
@@ -25,6 +26,7 @@ type SimulatorStage =
 	| 'idle'
 	| 'approaching_entry'
 	| 'waiting_rfid'
+	| 'barrier_pass'
 	| 'entry_processing'
 	| 'assigned_slot'
 	| 'parked'
@@ -56,6 +58,13 @@ interface SessionWaiter {
 	timerId: number;
 }
 
+interface StagePathWaiter {
+	stage: SimulatorStage;
+	resolve: () => void;
+	reject: (error: Error) => void;
+	timerId: number;
+}
+
 type VehicleType = 'motorbike' | 'car';
 
 interface ParkedVehicle {
@@ -74,6 +83,7 @@ const STAGE_LABELS: Record<SimulatorStage, string> = {
 	idle: 'Idle',
 	approaching_entry: 'Approaching entry gate',
 	waiting_rfid: 'Waiting RFID scan',
+	barrier_pass: 'Barrier pass',
 	entry_processing: 'Processing entry',
 	assigned_slot: 'Assigned slot',
 	parked: 'Parked',
@@ -83,11 +93,7 @@ const STAGE_LABELS: Record<SimulatorStage, string> = {
 };
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const STAGE_TRAVEL_MS = 8500;
-const STAGE_SHORT_HOLD_MS = 1200;
-const EXIT_STAGE_TRAVEL_MS = 11000;
-const GATE_WAIT_TIMEOUT_MS = 15000;
-const SESSION_WAIT_TIMEOUT_MS = 20000;
+const STAGE_PATH_TIMEOUT_MS = 60000;
 const isGateOpenState = (state?: string) => state === 'opening' || state === 'open';
 
 const MIN_LOADING_DURATION_MS = 2200;
@@ -139,6 +145,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 	const slotIdRef = useRef('');
 	const activeCorrelationIdRef = useRef('');
 	const sessionWaitersRef = useRef<SessionWaiter[]>([]);
+	const stagePathWaitersRef = useRef<StagePathWaiter[]>([]);
 	const createdSessionsByCorrelationRef = useRef<Map<string, string>>(new Map());
 	const gateWaitersRef = useRef<Record<GateId, GateWaiter[]>>({
 		'entry-gate': [],
@@ -166,6 +173,23 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 	useEffect(() => {
 		slotIdRef.current = slotId;
 	}, [slotId]);
+
+	useEffect(() => {
+		const socket = simulatorSocketRef.current;
+		if (!socket || !socket.connected || !hasJoinedSimulatorRoomRef.current) {
+			return;
+		}
+
+		void emitSimulatorStage(socket, {
+			stage,
+			plateNumber: plateNumber || undefined,
+			checkpoint: stage === 'waiting_rfid' ? 'entry_rfid' : undefined,
+			sessionId: sessionId || undefined,
+			correlationId: activeCorrelationIdRef.current || undefined
+		}).catch((error) => {
+			pushLog('Stage sync failed', error instanceof Error ? error.message : 'Unable to sync stage');
+		});
+	}, [stage, plateNumber, sessionId]);
 
 	const isRealtimeGateSyncActive = () =>
 		Boolean(simulatorSocketRef.current?.connected && hasJoinedSimulatorRoomRef.current);
@@ -201,6 +225,22 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 	};
 
+	const resolveStagePathWaiters = (stageValue: SimulatorStage) => {
+		const waiters = stagePathWaitersRef.current.filter((waiter) => waiter.stage === stageValue);
+		if (waiters.length === 0) {
+			return;
+		}
+
+		stagePathWaitersRef.current = stagePathWaitersRef.current.filter(
+			(waiter) => waiter.stage !== stageValue
+		);
+
+		for (const waiter of waiters) {
+			window.clearTimeout(waiter.timerId);
+			waiter.resolve();
+		}
+	};
+
 	const applyGateState = (gateId: 'entry-gate' | 'exit-gate', gateState: string) => {
 		const isOpen = isGateOpenState(gateState);
 
@@ -219,25 +259,18 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 	};
 
-	const waitForGateOpen = (gateId: GateId, timeoutMs = GATE_WAIT_TIMEOUT_MS) => {
+	const waitForGateOpen = (gateId: GateId) => {
 		const gateIsOpen = gateId === 'entry-gate' ? entryGateOpenRef.current : exitGateOpenRef.current;
 		if (gateIsOpen || !isRealtimeGateSyncActive()) {
 			return Promise.resolve();
 		}
 
-		return new Promise<void>((resolve, reject) => {
-			const timerId = window.setTimeout(() => {
-				gateWaitersRef.current[gateId] = gateWaitersRef.current[gateId].filter(
-					(waiter) => waiter.timerId !== timerId
-				);
-				reject(new Error(`Timed out waiting for ${gateId} to open`));
-			}, timeoutMs);
-
-			gateWaitersRef.current[gateId].push({ resolve, timerId });
+		return new Promise<void>((resolve) => {
+			gateWaitersRef.current[gateId].push({ resolve, timerId: 0 });
 		});
 	};
 
-	const waitForSessionCreated = (correlationId: string, timeoutMs = SESSION_WAIT_TIMEOUT_MS) => {
+	const waitForSessionCreated = (correlationId: string) => {
 		if (!correlationId) {
 			return Promise.reject(new Error('Missing correlation id for session wait'));
 		}
@@ -249,14 +282,23 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 
 		return new Promise<string>((resolve, reject) => {
-			const timerId = window.setTimeout(() => {
-				sessionWaitersRef.current = sessionWaitersRef.current.filter(
-					(waiter) => waiter.timerId !== timerId
-				);
-				reject(new Error('Timed out waiting for parking session creation'));
-			}, timeoutMs);
+			sessionWaitersRef.current.push({ correlationId, resolve, reject, timerId: 0 });
+		});
+	};
 
-			sessionWaitersRef.current.push({ correlationId, resolve, reject, timerId });
+	const waitForStagePath = (stageValue: SimulatorStage) => {
+		return new Promise<void>((resolve, reject) => {
+			const timerId = window.setTimeout(() => {
+				stagePathWaitersRef.current = stagePathWaitersRef.current.filter((waiter) => waiter.timerId !== timerId);
+				reject(new Error(`Timeout waiting for stage path completion: ${stageValue}`));
+			}, STAGE_PATH_TIMEOUT_MS);
+
+			stagePathWaitersRef.current.push({
+				stage: stageValue,
+				resolve,
+				reject,
+				timerId
+			});
 		});
 	};
 
@@ -575,10 +617,10 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 
 		setStage('entry_processing');
 		pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
-		await wait(STAGE_TRAVEL_MS);
+		await waitForStagePath('entry_processing');
 		setStage('assigned_slot');
 		pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
-		await wait(STAGE_TRAVEL_MS);
+		await waitForStagePath('assigned_slot');
 		setStage('parked');
 		setParkedVehicles((current) => [
 			...current,
@@ -636,7 +678,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			setResult('Vehicle spawned from operator-approved entry');
 			pushLog('Vehicle spawned', `${nextPlateNumber} -> session ${sessionIdValue}`);
 
-			await wait(STAGE_TRAVEL_MS);
+			await waitForStagePath('approaching_entry');
 			setStage('waiting_rfid');
 			pushLog('Vehicle stopped', 'Vehicle reached entry checkpoint after operator approval');
 			await notifyCheckpoint('entry_rfid', nextPlateNumber, sessionIdValue, normalizedCorrelationId);
@@ -644,8 +686,6 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			applyGateState('entry-gate', 'open');
 			pushLog('Barrier opened', 'Entry gate already approved by backend, continuing drive-in');
 
-			await wait(STAGE_SHORT_HOLD_MS);
-			setStage('entry_processing');
 			pushLog('Vehicle proceeding', 'Monthly card approved - vehicle proceeding through open gate');
 			await finalizeEntryJourney(
 				sessionIdValue,
@@ -759,7 +799,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 
 		try {
-			await wait(STAGE_TRAVEL_MS);
+			await waitForStagePath('approaching_entry');
 			setStage('waiting_rfid');
 			pushLog('Vehicle stopped', 'Waiting for RFID scan and plate recognition');
 			await notifyCheckpoint('entry_rfid', nextPlateNumber, '', correlationId);
@@ -773,8 +813,6 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 				applyGateState('entry-gate', 'open');
 				pushLog('Barrier opened', 'Entry gate lifted after check-in');
 			}
-
-			await wait(STAGE_SHORT_HOLD_MS);
 
 			const createdSessionId = await waitForSessionCreated(correlationId);
 			setSessionId(createdSessionId);
@@ -810,10 +848,10 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			setStage('entry_processing');
 
 			pushLog('Vehicle turning', 'Vehicle passed RFID and is entering the parking lanes');
-			await wait(STAGE_TRAVEL_MS);
+			await waitForStagePath('entry_processing');
 			setStage('assigned_slot');
 			pushLog('Scene slot', `Visual slot index ${selectedSceneSlotId}`);
-			await wait(STAGE_TRAVEL_MS);
+			await waitForStagePath('assigned_slot');
 			setStage('parked');
 			setParkedVehicles((current) => [
 				...current,
@@ -866,7 +904,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		pushLog('Vehicle leaving slot', `${vehicle.plateNumber} leaving scene slot ${vehicle.sceneSlotId}`);
 
 		try {
-			await wait(STAGE_TRAVEL_MS);
+			await waitForStagePath('approaching_exit');
 			const correlationId = activeCorrelationIdRef.current || crypto.randomUUID();
 			activeCorrelationIdRef.current = correlationId;
 			const exitResult = await completeSimulatorParkingExit({
@@ -897,7 +935,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 				pushLog('Barrier opened', 'Exit gate lifted after check-out');
 			}
 			setStage('exit_processing');
-			await wait(EXIT_STAGE_TRAVEL_MS);
+			await waitForStagePath('exit_processing');
 			setResult(`Vehicle exited from DB slot ${vehicle.dbSlotCode || 'released'}`);
 			setStage(remainingVehicles.length > 0 ? 'parked' : 'completed');
 			setActiveVehicle(null);
@@ -1019,6 +1057,10 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		setPlateNumber('');
 	};
 
+	const handleStagePathCompleted = (completedStage: SimulatorStage) => {
+		resolveStagePathWaiters(completedStage);
+	};
+
 	return (
 		<section className="panel simulator-panel">
 			<header className="panel-head">
@@ -1050,6 +1092,7 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 							onParkedCarClick={handleParkedCarClick}
 							onEntryBarrierPassed={handleEntryBarrierPassed}
 							onExitBarrierPassed={handleExitBarrierPassed}
+							onStagePathCompleted={handleStagePathCompleted}
 						/>
 					</Suspense>
 

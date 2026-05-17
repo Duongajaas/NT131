@@ -35,6 +35,7 @@ interface ParkingScene3DProps {
 	onParkedCarClick?: (vehicleId: string) => void;
 	onEntryBarrierPassed?: () => void;
 	onExitBarrierPassed?: () => void;
+	onStagePathCompleted?: (stage: SimulatorStage) => void;
 }
 
 type PathPoint = [number, number, number];
@@ -675,7 +676,8 @@ function Car({
 	loop = false,
 	rotationY = 0,
 	onClick,
-	onPositionChange
+	onPositionChange,
+	onPathCompleted
 }: {
 	waypoints: PathPoint[];
 	plateNumber: string;
@@ -685,6 +687,7 @@ function Car({
 	rotationY?: number;
 	onClick?: () => void;
 	onPositionChange?: (position: THREE.Vector3) => void;
+	onPathCompleted?: () => void;
 }) {
 	const carRef = useRef<THREE.Group>(null);
 	const plateTone = useMemo(() => '#64748b', []);
@@ -698,6 +701,7 @@ function Car({
 	const progressRef = useRef(0);
 	const progressPerSecond = 0.12;
 	const travelPointRef = useRef(new THREE.Vector3());
+	const hasReportedPathCompletionRef = useRef(false);
 
 	useEffect(() => {
 		if (vehicleType !== 'car') {
@@ -829,6 +833,7 @@ function Car({
 
 	useEffect(() => {
 		progressRef.current = 0;
+		hasReportedPathCompletionRef.current = false;
 	}, [waypoints]);
 
 	useFrame((_, delta) => {
@@ -840,6 +845,12 @@ function Car({
 			const [x, y, z] = waypoints[0];
 			carRef.current.position.set(x, y, z);
 			onPositionChange?.(carRef.current.position);
+			
+			// For single-point waypoints, report completion on first frame
+			if (!hasReportedPathCompletionRef.current) {
+				hasReportedPathCompletionRef.current = true;
+				onPathCompleted?.();
+			}
 			return;
 		}
 
@@ -864,6 +875,11 @@ function Car({
 		carRef.current.position.copy(travelPointRef.current);
 		carRef.current.rotation.y = Math.atan2(activeSegment.tangent.x, activeSegment.tangent.z) + headingOffset;
 		onPositionChange?.(carRef.current.position);
+
+		if (!loop && progressRef.current >= 1 && !hasReportedPathCompletionRef.current) {
+			hasReportedPathCompletionRef.current = true;
+			onPathCompleted?.();
+		}
 	});
 
 	const renderFallbackCar = () => (
@@ -968,12 +984,14 @@ function ParkingScene3D({
 	exitGateOpen = false,
 	onParkedCarClick,
 	onEntryBarrierPassed,
-	onExitBarrierPassed
+	onExitBarrierPassed,
+	onStagePathCompleted
 }: ParkingScene3DProps) {
 	const parsedActiveSceneSlotId = Number.parseInt(activeSceneSlotId, 10);
 	const targetSlotId = isSupportedDemoSlotId(parsedActiveSceneSlotId) ? parsedActiveSceneSlotId : 8;
 	const carWaypointsByStage = useMemo(() => createCarWaypoints(targetSlotId), [targetSlotId]);
 	const sceneShellRef = useRef<HTMLDivElement>(null);
+	const currentStageRef = useRef<SimulatorStage>(stage);
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const shouldLoopCar = false;
 	const carWaypoints = carWaypointsByStage[stage] ?? carWaypointsByStage.approaching_entry;
@@ -1003,6 +1021,10 @@ function ParkingScene3D({
 			hasReportedExitBarrierPassRef.current = false;
 		}
 	}, [exitGateOpen]);
+
+	useEffect(() => {
+		currentStageRef.current = stage;
+	}, [stage]);
 
 	useEffect(() => {
 		previousCarPositionRef.current = null;
@@ -1166,6 +1188,7 @@ function ParkingScene3D({
 							vehicleType={activeVehicleType}
 							loop={shouldLoopCar}
 							onPositionChange={handleCarPositionChange}
+							onPathCompleted={() => onStagePathCompleted?.(currentStageRef.current)}
 						/>
 					) : null}
 					<Html position={[1.5, 0.35, ENTRY_LANE_Z]} center>

@@ -1,0 +1,47 @@
+{
+  "testName": "Test7",
+  "durationMs": 30000,
+  "generatedAt": "2026-05-21T14:15:20.590Z",
+  "sentTotal": 0,
+  "acks": 0,
+  "lostCount": 0,
+  "lostSeqs": [],
+  "stats": {
+    "avgRttMs": 913,
+    "p95RttMs": 1170,
+    "p99RttMs": 1170,
+    "maxRttMs": 1170
+  },
+  "samples": [
+    {
+      "seq": 1,
+      "label": "socket.reconnect",
+      "rtt": 1066,
+      "details": "cycle=1/5 attempt=1"
+    },
+    {
+      "seq": 2,
+      "label": "socket.reconnect",
+      "rtt": 587,
+      "details": "cycle=2/5 attempt=1"
+    },
+    {
+      "seq": 3,
+      "label": "socket.reconnect",
+      "rtt": 973,
+      "details": "cycle=3/5 attempt=1"
+    },
+    {
+      "seq": 4,
+      "label": "socket.reconnect",
+      "rtt": 770,
+      "details": "cycle=4/5 attempt=1"
+    },
+    {
+      "seq": 5,
+      "label": "socket.reconnect",
+      "rtt": 1170,
+      "details": "cycle=5/5 attempt=1"
+    }
+  ]
+}

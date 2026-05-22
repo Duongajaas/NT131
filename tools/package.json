@@ -1,0 +1,24 @@
+{
+  "name": "tools",
+  "version": "1.0.0",
+  "description": "",
+  "main": "send-events.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:test1": "node Test1.js",
+    "test:test2": "node Test2.js",
+    "test:test3": "node Test3.js",
+    "test:test4": "node Test4.js",
+    "test:test5": "node Test5.js",
+    "test:test6": "node Test6.js",
+    "test:test7": "node Test7.js",
+    "test:all": "node send-events.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}

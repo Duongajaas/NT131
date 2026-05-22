@@ -1,0 +1,47 @@
+{
+  "testName": "Test1",
+  "durationMs": 15000,
+  "generatedAt": "2026-05-21T14:24:22.849Z",
+  "sentTotal": 5,
+  "acks": 5,
+  "lostCount": 0,
+  "lostSeqs": [],
+  "stats": {
+    "avgRttMs": 4,
+    "p95RttMs": 5,
+    "p99RttMs": 5,
+    "maxRttMs": 5
+  },
+  "samples": [
+    {
+      "seq": 1,
+      "label": "[RTT]",
+      "rtt": 5,
+      "details": "seq=1 gateId=entry-gate command=open"
+    },
+    {
+      "seq": 2,
+      "label": "[RTT]",
+      "rtt": 4,
+      "details": "seq=2 gateId=entry-gate command=open"
+    },
+    {
+      "seq": 3,
+      "label": "[RTT]",
+      "rtt": 3,
+      "details": "seq=3 gateId=entry-gate command=close"
+    },
+    {
+      "seq": 4,
+      "label": "[RTT]",
+      "rtt": 3,
+      "details": "seq=4 gateId=entry-gate command=open"
+    },
+    {
+      "seq": 5,
+      "label": "[RTT]",
+      "rtt": 4,
+      "details": "seq=5 gateId=entry-gate command=close"
+    }
+  ]
+}

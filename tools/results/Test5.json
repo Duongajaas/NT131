@@ -1,0 +1,47 @@
+{
+  "testName": "Test5",
+  "durationMs": 15000,
+  "generatedAt": "2026-05-21T14:14:28.473Z",
+  "sentTotal": 0,
+  "acks": 0,
+  "lostCount": 0,
+  "lostSeqs": [],
+  "stats": {
+    "avgRttMs": 280,
+    "p95RttMs": 939,
+    "p99RttMs": 939,
+    "maxRttMs": 939
+  },
+  "samples": [
+    {
+      "seq": 1,
+      "label": "rfid.scan.rejected",
+      "rtt": 939,
+      "details": "uid=TEST5-UNKNOWN-UID checkpoint=entry_rfid reason=processing_failed correlationId=test5-1-1779372865706"
+    },
+    {
+      "seq": 2,
+      "label": "rfid.scan.rejected",
+      "rtt": 105,
+      "details": "uid=TEST5-UNKNOWN-UID checkpoint=entry_rfid reason=processing_failed correlationId=test5-2-1779372866902"
+    },
+    {
+      "seq": 3,
+      "label": "rfid.scan.rejected",
+      "rtt": 135,
+      "details": "uid=TEST5-UNKNOWN-UID checkpoint=entry_rfid reason=processing_failed correlationId=test5-3-1779372867278"
+    },
+    {
+      "seq": 4,
+      "label": "rfid.scan.rejected",
+      "rtt": 91,
+      "details": "uid=TEST5-UNKNOWN-UID checkpoint=entry_rfid reason=processing_failed correlationId=test5-4-1779372867726"
+    },
+    {
+      "seq": 5,
+      "label": "rfid.scan.rejected",
+      "rtt": 130,
+      "details": "uid=TEST5-UNKNOWN-UID checkpoint=entry_rfid reason=processing_failed correlationId=test5-5-1779372868084"
+    }
+  ]
+}

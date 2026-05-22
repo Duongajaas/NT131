@@ -12,6 +12,9 @@
 #include <SPI.h>
 #include <MFRC522.h>
 
+// FreeRTOS multitasking support
+#include "freertos-tasks.h"
+
 // Default MFRC522 pin mapping (override in hardware_config.h if needed)
 #ifndef SS_PIN
 #define SS_PIN 5
@@ -50,14 +53,17 @@ String hardwareBootstrapKey = HARDWARE_BOOTSTRAP_KEY_STR;
 uint32_t reconnectIntervalMs = 5000;
 
 // ===== Servo pins =====
-const int ENTRY_SERVO_PIN = HW_ENTRY_SERVO_PIN;  // entry-gate
-const int EXIT_SERVO_PIN = HW_EXIT_SERVO_PIN;   // exit-gate (servo 1)
+extern const int ENTRY_SERVO_PIN = HW_ENTRY_SERVO_PIN;  // entry-gate
+extern const int EXIT_SERVO_PIN = HW_EXIT_SERVO_PIN;   // exit-gate (servo 1)
 
-const int SERVO_MIN_ANGLE = 0;
-const int SERVO_MAX_ANGLE = 180;
-const int SERVO_STEP = 5;
-const int SERVO_STEP_DELAY_MS = 35;
+extern const int SERVO_MIN_ANGLE = 0;
+extern const int SERVO_MAX_ANGLE = 180;
+extern const int SERVO_STEP = 5;
+extern const int SERVO_STEP_DELAY_MS = 35;
 const bool OPERATOR_ONLY_CONTROL = true;
+
+// Auto-close delay after opening gate (milliseconds). Set to 0 to disable.
+const uint32_t DEFAULT_AUTO_CLOSE_MS = 1500;
 
 const char* GATE_ENTRY = "entry-gate";
 const char* GATE_EXIT = "exit-gate";
@@ -72,7 +78,7 @@ bool joinSent = false;
 bool joinPending = false;
 unsigned long joinRequestedAt = 0;
 unsigned long lastReconnectAttempt = 0;
-const unsigned long JOIN_DELAY_MS = 1000;
+extern const unsigned long JOIN_DELAY_MS = 1000;
 bool rfidScanEnabled = false;
 String currentRfidCheckpoint = CHECKPOINT_ENTRY;
 String currentRfidCorrelationId = "";
@@ -90,6 +96,8 @@ Servo exitServo;
 
 int entryAngle = 0;
 int exitAngle = 0;
+bool entryAngleSet = false;  // Track if entry servo has been explicitly set
+bool exitAngleSet = false;   // Track if exit servo has been explicitly set
 
 bool fetchSocketConfigFromBackend() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -189,16 +197,29 @@ void connectWiFi() {
   displayStatus("WiFi connected", WiFi.localIP().toString());
 }
 
-void sweepServo(Servo& servo, int& currentAngle, int targetAngle) {
+void sweepServo(Servo& servo, int& currentAngle, int targetAngle, bool& angleSet) {
   targetAngle = constrain(targetAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
 
-  if (currentAngle == targetAngle) {
+  // If angle already matches target and has been explicitly set before, skip
+  if (currentAngle == targetAngle && angleSet) {
+    Serial.print("[sweepServo] angle already at target ");
+    Serial.print(currentAngle);
+    Serial.println(" (skipping sweep)");
     return;
   }
 
+  // Mark as set before sweep
+  angleSet = true;
+
   int step = (targetAngle > currentAngle) ? SERVO_STEP : -SERVO_STEP;
+  Serial.print("[sweepServo] from ");
+  Serial.print(currentAngle);
+  Serial.print(" to ");
+  Serial.println(targetAngle);
   for (int angle = currentAngle; (step > 0) ? angle <= targetAngle : angle >= targetAngle; angle += step) {
     servo.write(angle);
+    Serial.print("[sweepServo] write angle=");
+    Serial.println(angle);
     delay(SERVO_STEP_DELAY_MS);
   }
 
@@ -207,19 +228,19 @@ void sweepServo(Servo& servo, int& currentAngle, int targetAngle) {
 }
 
 void openEntryGate() {
-  sweepServo(entryServo, entryAngle, SERVO_MAX_ANGLE);  // 0 -> 180
+  sweepServo(entryServo, entryAngle, SERVO_MAX_ANGLE, entryAngleSet);  // 0 -> 180
 }
 
 void closeEntryGate() {
-  sweepServo(entryServo, entryAngle, SERVO_MIN_ANGLE);  // 180 -> 0
+  sweepServo(entryServo, entryAngle, SERVO_MIN_ANGLE, entryAngleSet);  // 180 -> 0
 }
 
 void openExitGate() {
-  sweepServo(exitServo, exitAngle, SERVO_MAX_ANGLE);  // 0 -> 180
+  sweepServo(exitServo, exitAngle, SERVO_MAX_ANGLE, exitAngleSet);  // 0 -> 180
 }
 
 void closeExitGate() {
-  sweepServo(exitServo, exitAngle, SERVO_MIN_ANGLE);  // 180 -> 0
+  sweepServo(exitServo, exitAngle, SERVO_MIN_ANGLE, exitAngleSet);  // 180 -> 0
 }
 
 String normalizeGateId(const String& gateId) {
@@ -246,7 +267,7 @@ String normalizeCommand(const String& command) {
   return command;
 }
 
-void applyGateCommand(const String& gateId, const String& command) {
+void applyGateCommand(const String& gateId, const String& command, const String& source = String("backend"), uint32_t seq = 0) {
   String normalizedGateId = normalizeGateId(gateId);
   String normalizedCommand = normalizeCommand(command);
 
@@ -258,30 +279,36 @@ void applyGateCommand(const String& gateId, const String& command) {
     return;
   }
 
-  Serial.print("[Gate] gateId=");
+  Serial.print("[Gate] queueing command: gateId=");
   Serial.print(normalizedGateId);
   Serial.print(" command=");
   Serial.println(normalizedCommand);
 
-  if (normalizedGateId == GATE_ENTRY) {
-    displayStatus(String(GATE_ENTRY), normalizedCommand);
-    if (normalizedCommand == CMD_OPEN) {
-      openEntryGate();
-    } else {
-      closeEntryGate();
-    }
+  // Queue servo command to the servo control task
+  ServoCommand cmd;
+  strncpy(cmd.gateId, normalizedGateId.c_str(), sizeof(cmd.gateId) - 1);
+  strncpy(cmd.command, normalizedCommand.c_str(), sizeof(cmd.command) - 1);
+  strncpy(cmd.source, source.c_str(), sizeof(cmd.source) - 1);
+  cmd.seq = seq;
+  cmd.commandId = millis();
+  // Auto-close only for open commands by default
+  if (normalizedCommand == CMD_OPEN) {
+    cmd.autoCloseMs = DEFAULT_AUTO_CLOSE_MS;
+  } else {
+    cmd.autoCloseMs = 0;
   }
 
-  if (normalizedGateId == GATE_EXIT) {
-    displayStatus(String(GATE_EXIT), normalizedCommand);
-    if (normalizedCommand == CMD_OPEN) {
-      openExitGate();
-    } else {
-      closeExitGate();
-    }
+  if (xQueueSend(queueServoCommand, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
+    Serial.println("[Gate] command queued successfully");
+    emitGateAck(cmd, millis(), millis());
+    DisplayMessage msg;
+    snprintf(msg.line1, sizeof(msg.line1), "Gate: %s", normalizedGateId.c_str());
+    snprintf(msg.line2, sizeof(msg.line2), "%s...", normalizedCommand.c_str());
+    msg.durationMs = 500;
+    xQueueSend(queueDisplay, &msg, pdMS_TO_TICKS(100));
+  } else {
+    Serial.println("[Gate] failed to queue command");
   }
-
-  displayStatus("Done", normalizedGateId + " " + normalizedCommand);
 }
 
 String normalizeUid(const String& uid) {
@@ -314,6 +341,31 @@ bool isLikelyUidFormat(const String& value) {
   }
 
   return hasHex;
+}
+
+void emitGateAck(const ServoCommand& cmd, uint32_t receivedTs, uint32_t processedTs) {
+  if (cmd.seq == 0) {
+    return;
+  }
+
+  DynamicJsonDocument ackDoc(256);
+  JsonObject obj = ackDoc.to<JsonObject>();
+  obj["seq"] = cmd.seq;
+  obj["gateId"] = cmd.gateId;
+  obj["command"] = cmd.command;
+  obj["source"] = cmd.source;
+  obj["receivedTs"] = receivedTs;
+  obj["processedTs"] = processedTs;
+
+  String out;
+  serializeJson(obj, out);
+  String evt = String("[\"gate.ack\",") + out + String("]");
+  bool ok = socketIO.sendEVENT(evt);
+
+  Serial.print("[Gate ACK] sent seq=");
+  Serial.print(cmd.seq);
+  Serial.print(" ok=");
+  Serial.println(ok ? "true" : "false");
 }
 
 void emitRfidScanEvent(const String& uid, const String& checkpoint) {
@@ -448,6 +500,7 @@ void handleRealtimeEnvelope(JsonObjectConst envelope) {
 
   const char* eventName = envelope["eventName"] | "";
   JsonObjectConst payload = envelope["payload"].as<JsonObjectConst>();
+  const char* src = envelope["source"] | "";
 
   if (String(eventName) == "simulator.stage.changed") {
     const char* stage = payload["stage"] | "";
@@ -465,6 +518,11 @@ void handleRealtimeEnvelope(JsonObjectConst envelope) {
       displayStatus("waiting_rfid", "Scan RFID card");
       Serial.print("[RFID] waiting at checkpoint: ");
       Serial.println(currentRfidCheckpoint);
+    }
+    if (String(stage) == "exiting" || String(stage) == "exit_processing") {
+      // Vehicle ready to exit → open exit gate
+      Serial.println("[Stage] Auto-opening exit gate (exiting/exit_processing)");
+      applyGateCommand(String(GATE_EXIT), String(CMD_OPEN), String("simulator"));
     }
     return;
   }
@@ -486,12 +544,29 @@ void handleRealtimeEnvelope(JsonObjectConst envelope) {
       displayStatus("waiting_rfid", "Scan RFID card");
       Serial.println("[RFID] entry checkpoint arrived, waiting for scan");
     }
+    if (String(checkpoint) == CHECKPOINT_EXIT && String(state) == "arrived") {
+      rfidScanEnabled = true;
+      currentRfidCheckpoint = String(CHECKPOINT_EXIT);
+      currentRfidCorrelationId = String(correlationId);
+      displayStatus("waiting_rfid_exit", "Scan RFID card");
+      Serial.println("[RFID] exit checkpoint arrived, waiting for scan");
+    }
+    // If the vehicle has passed the barrier at a checkpoint, request gate close
+    if (String(state) == "passed" || String(state) == "exited" || String(state) == "departed") {
+      String gateId = (String(checkpoint) == CHECKPOINT_ENTRY) ? String(GATE_ENTRY) : String(GATE_EXIT);
+      Serial.print("[Vehicle] passing detected at checkpoint ");
+      Serial.print(checkpoint);
+      Serial.print(" -> requesting gate close for ");
+      Serial.println(gateId);
+      applyGateCommand(gateId, String(CMD_CLOSE));
+    }
     return;
   }
 
   if (String(eventName) == "rfid.scan.accepted") {
     rfidScanEnabled = false;
     const char* uid = payload["uid"] | "";
+    const char* checkpoint = payload["checkpoint"] | "";
     const char* expected_plate = payload["expected_plate_number"] | payload["expected_plate"] | "";
     String showUid = (strlen(uid) > 0) ? String(uid) : lastScannedUid;
     displayStatus("RFID accepted", showUid);
@@ -501,6 +576,30 @@ void handleRealtimeEnvelope(JsonObjectConst envelope) {
       Serial.print("[RFID] expected_plate: ");
       Serial.println(expected_plate);
     }
+    
+    // Open entry gate when RFID accepted at entry
+    String checkpointStr = strlen(checkpoint) > 0 ? String(checkpoint) : String("");
+    if (checkpointStr == CHECKPOINT_ENTRY || checkpointStr == "") {
+      Serial.println("[RFID] Opening entry gate (RFID accepted at entry)");
+      applyGateCommand(String(GATE_ENTRY), String(CMD_OPEN), String("backend"));
+    }
+    // Emit generic event ACK if seq present in payload
+    {
+      int seq = payload["seq"] | 0;
+      if (seq > 0) {
+        DynamicJsonDocument ackDoc(256);
+        JsonObject obj = ackDoc.to<JsonObject>();
+        obj["event"] = String(eventName);
+        obj["seq"] = seq;
+        obj["receivedTs"] = millis();
+        obj["processedTs"] = millis();
+        String out; serializeJson(obj, out);
+        String evt = String("[\"event.ack\",") + out + String("]");
+        bool ok = socketIO.sendEVENT(evt);
+        Serial.print("[Event ACK] sent event="); Serial.print(eventName); Serial.print(" seq="); Serial.print(seq); Serial.print(" ok="); Serial.println(ok ? "true" : "false");
+      }
+    }
+    
     return;
   }
 
@@ -521,6 +620,21 @@ void handleRealtimeEnvelope(JsonObjectConst envelope) {
       Serial.println(reason);
     }
     return;
+  }
+
+  // Fallback: some simulator-originated packets may carry direct gate commands
+  // even if a top-level "gate.command.sent" event wasn't emitted. Accept
+  // simulator-sourced payloads that include gateId+command and apply them.
+  if (String(src) == "simulator") {
+    const char* maybeGateId = payload["gateId"] | "";
+    const char* maybeCommand = payload["command"] | "";
+    if (strlen(maybeGateId) > 0 && strlen(maybeCommand) > 0) {
+      Serial.print("[Fallback] applying simulator gate command: ");
+      Serial.print(maybeGateId);
+      Serial.print(" ");
+      Serial.println(maybeCommand);
+      applyGateCommand(String(maybeGateId), String(maybeCommand), String("simulator"));
+    }
   }
 }
 
@@ -580,7 +694,8 @@ void emitHardwareJoin() {
 
 void handleGateEnvelope(JsonObjectConst envelope) {
   const char* source = envelope["source"] | "";
-  if (OPERATOR_ONLY_CONTROL && String(source) != "operator") {
+  String src = String(source);
+  if (OPERATOR_ONLY_CONTROL && !(src == "operator" || src == "simulator")) {
     Serial.print("[Gate] Ignored command from source=");
     Serial.println(source);
     return;
@@ -593,12 +708,13 @@ void handleGateEnvelope(JsonObjectConst envelope) {
 
   const char* gateId = payload["gateId"] | "";
   const char* command = payload["command"] | "";
+  uint32_t seq = payload["seq"] | 0;
 
   if (strlen(gateId) == 0 || strlen(command) == 0) {
     return;
   }
 
-  applyGateCommand(String(gateId), String(command));
+  applyGateCommand(String(gateId), String(command), src, seq);
 }
 
 void onSocketEvent(socketIOmessageType_t type, uint8_t* payload, size_t length) {
@@ -800,29 +916,43 @@ void setup() {
   Serial.println("[RFID] RFID_ENTRY:<UID>");
   Serial.println("[RFID] RFID_EXIT:<UID>");
   displayStatus("System", "Ready");
+
+  // ===== Initialize FreeRTOS =====
+  Serial.println("[System] Initializing FreeRTOS...");
+  initializeFreertos();
+  createAllTasks();
+  Serial.println("[System] FreeRTOS started - scheduler taking control");
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
-  }
-
-  socketIO.loop();
-
-  if (socketConnected && joinPending && !joinSent && (millis() - joinRequestedAt) >= JOIN_DELAY_MS) {
-    joinPending = false;
-    emitHardwareJoin();
-  }
-
+  // With FreeRTOS running, the main loop is minimal
+  // All work is handled by individual tasks:
+  // - taskSocketIO (Core 1): Socket.IO events
+  // - taskRfidPolling (Core 0): RFID card polling
+  // - taskServoControl (Core 0): Servo control
+  // - taskWifiManager (Core 1): WiFi management
+  // - taskLcdDisplay (Core 0): LCD updates
+  //
+  // Main thread responsibilities:
+  // 1. Process serial RFID input
+  // 2. Emit queued RFID events
+  // 3. Handle join request
+  
   processSerialRfidInput();
-  processMfrcRfid();
-
-  // Monitor connection state
-  unsigned long now = millis();
-  if (!socketConnected && (now - lastReconnectAttempt) > reconnectIntervalMs) {
-    lastReconnectAttempt = now;
-    Serial.println("[Socket] Attempting reconnect...");
+  
+  // Send join if needed
+  static unsigned long lastJoinAttempt = 0;
+  if (socketConnected && joinPending && !joinSent && 
+      (millis() - lastJoinAttempt) >= JOIN_DELAY_MS) {
+    lastJoinAttempt = millis();
+    emitHardwareJoinFromLoop();
   }
+
+  // Process any queued RFID events
+  processQueuedRfidEvents();
+
+  // Yield to scheduler
+  vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 void processMfrcRfid() {
@@ -877,4 +1007,86 @@ void processMfrcRfid() {
 
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
+}
+
+// ===== Process Queued RFID Events (called from main loop) =====
+void processQueuedRfidEvents() {
+  RfidScanEvent event;
+  
+  while (xQueueReceive(queueRfidEvent, &event, 0) == pdTRUE) {
+    if (!socketConnected || !joinSent) {
+      Serial.println("[RFID] Skip emit: socket not ready");
+      continue;
+    }
+
+    Serial.print("[RFID] Emitting queued event: ");
+    Serial.println(event.uid);
+
+    Serial.println("[Mutex] taking socketIO mutex (RFID queued emit)");
+    if (xSemaphoreTake(mutexSocketIO, pdMS_TO_TICKS(500)) == pdTRUE) {
+      Serial.println("[Mutex] acquired (RFID queued emit)");
+      DynamicJsonDocument doc(512);
+      JsonArray root = doc.to<JsonArray>();
+      root.add("hardware.rfid.scan");
+
+      JsonObject payload = root.createNestedObject();
+      payload["uid"] = event.uid;
+      payload["checkpoint"] = event.checkpoint;
+      payload["correlationId"] = String(event.correlationId).length() > 0 
+        ? String(event.correlationId) 
+        : String("esp32-rfid-") + String(millis());
+
+      String output;
+      serializeJson(doc, output);
+
+      Serial.print("[RFID] emit payload: ");
+      Serial.println(output);
+      bool ok = socketIO.sendEVENT(output);
+      Serial.print("[RFID] sendEVENT ok: ");
+      Serial.println(ok ? "true" : "false");
+
+      rfidScanEnabled = false;
+      xSemaphoreGive(mutexSocketIO);
+      Serial.println("[Mutex] released (RFID queued emit)");
+    } else {
+      Serial.println("[Mutex] failed to acquire socketIO mutex (RFID queued emit)");
+    }
+  }
+}
+
+// ===== Emit Hardware Join (called from main loop) =====
+void emitHardwareJoinFromLoop() {
+  if (joinSent) {
+    return;
+  }
+
+  Serial.println("[Mutex] taking socketIO mutex (hardware.join)");
+  if (xSemaphoreTake(mutexSocketIO, pdMS_TO_TICKS(500)) == pdTRUE) {
+    Serial.println("[Mutex] acquired (hardware.join)");
+    DynamicJsonDocument doc(512);
+    JsonArray root = doc.to<JsonArray>();
+    root.add("hardware.join");
+    
+    JsonObject payload = root.createNestedObject();
+    if (hardwareBootstrapKey.length() > 0) {
+      payload["hardwareKey"] = hardwareBootstrapKey;
+    }
+
+    String output;
+    serializeJson(doc, output);
+    
+    Serial.print("[Socket] Payload being sent: ");
+    Serial.println(output);
+    
+    bool ok = socketIO.sendEVENT(output);
+    Serial.print("[Socket] sendEVENT ok: ");
+    Serial.println(ok ? "true" : "false");
+    joinSent = true;
+    Serial.println("[Socket] hardware.join sent");
+
+    xSemaphoreGive(mutexSocketIO);
+    Serial.println("[Mutex] released (hardware.join)");
+  } else {
+    Serial.println("[Mutex] failed to acquire socketIO mutex (hardware.join)");
+  }
 }

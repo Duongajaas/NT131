@@ -1,0 +1,47 @@
+{
+  "testName": "Test4",
+  "durationMs": 15000,
+  "generatedAt": "2026-05-21T14:14:08.366Z",
+  "sentTotal": 0,
+  "acks": 0,
+  "lostCount": 0,
+  "lostSeqs": [],
+  "stats": {
+    "avgRttMs": 9,
+    "p95RttMs": 18,
+    "p99RttMs": 18,
+    "maxRttMs": 18
+  },
+  "samples": [
+    {
+      "seq": 1,
+      "label": "gate.state.changed",
+      "rtt": 4,
+      "details": "gateId=entry-gate state=open command=open correlationId=test4-1-1779372847033"
+    },
+    {
+      "seq": 2,
+      "label": "gate.state.changed",
+      "rtt": 9,
+      "details": "gateId=entry-gate state=closed command=close correlationId=test4-2-1779372847291"
+    },
+    {
+      "seq": 3,
+      "label": "gate.state.changed",
+      "rtt": 12,
+      "details": "gateId=entry-gate state=open command=open correlationId=test4-3-1779372847553"
+    },
+    {
+      "seq": 4,
+      "label": "gate.state.changed",
+      "rtt": 4,
+      "details": "gateId=entry-gate state=closed command=close correlationId=test4-4-1779372847818"
+    },
+    {
+      "seq": 5,
+      "label": "gate.state.changed",
+      "rtt": 18,
+      "details": "gateId=entry-gate state=open command=open correlationId=test4-5-1779372848084"
+    }
+  ]
+}

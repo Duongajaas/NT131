@@ -11,6 +11,7 @@ import {
 import {
 	assignParkingSlot,
 	completeSimulatorParkingExit,
+	ApiError,
 	getRfidCardById,
 	getSimulatorApiKey,
 	getVehicleById,
@@ -63,6 +64,16 @@ interface StagePathWaiter {
 	resolve: () => void;
 	reject: (error: Error) => void;
 	timerId: number;
+}
+
+interface RfidDecisionWaiter {
+	checkpoint: 'entry_rfid' | 'exit_rfid';
+	resolve: () => void;
+}
+
+interface RfidScanWaiter {
+	checkpoint: 'entry_rfid' | 'exit_rfid';
+	resolve: (uid: string) => void;
 }
 
 type VehicleType = 'motorbike' | 'car';
@@ -157,6 +168,16 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		'entry-gate': [],
 		'exit-gate': []
 	});
+	const rfidAcceptedRef = useRef<Record<'entry_rfid' | 'exit_rfid', boolean>>({
+		entry_rfid: false,
+		exit_rfid: false
+	});
+	const rfidWaitersRef = useRef<RfidDecisionWaiter[]>([]);
+	const rfidScanWaitersRef = useRef<RfidScanWaiter[]>([]);
+	const rfidScanUidRef = useRef<Record<'entry_rfid' | 'exit_rfid', string>>({
+		entry_rfid: '',
+		exit_rfid: ''
+	});
 
 	const stageLabel = useMemo(() => STAGE_LABELS[stage], [stage]);
 
@@ -232,6 +253,112 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		}
 	};
 
+	const resolveRfidWaiters = (checkpoint: 'entry_rfid' | 'exit_rfid') => {
+		const waiters = rfidWaitersRef.current.filter((waiter) => waiter.checkpoint === checkpoint);
+		if (waiters.length === 0) {
+			return;
+		}
+
+		rfidWaitersRef.current = rfidWaitersRef.current.filter(
+			(waiter) => waiter.checkpoint !== checkpoint
+		);
+
+		for (const waiter of waiters) {
+			waiter.resolve();
+		}
+	};
+
+	const clearRfidWaiters = (checkpoint: 'entry_rfid' | 'exit_rfid') => {
+		rfidWaitersRef.current = rfidWaitersRef.current.filter(
+			(waiter) => waiter.checkpoint !== checkpoint
+		);
+	};
+
+	const markRfidAccepted = (checkpoint: 'entry_rfid' | 'exit_rfid') => {
+		const hasWaiters = rfidWaitersRef.current.some((waiter) => waiter.checkpoint === checkpoint);
+		if (hasWaiters) {
+			resolveRfidWaiters(checkpoint);
+			rfidAcceptedRef.current[checkpoint] = false;
+			return;
+		}
+
+		rfidAcceptedRef.current[checkpoint] = true;
+	};
+
+	const waitForRfidAccepted = (checkpoint: 'entry_rfid' | 'exit_rfid') => {
+		if (rfidAcceptedRef.current[checkpoint]) {
+			rfidAcceptedRef.current[checkpoint] = false;
+			return Promise.resolve();
+		}
+
+		return new Promise<void>((resolve) => {
+			rfidWaitersRef.current.push({ checkpoint, resolve });
+		});
+	};
+
+	const resolveRfidScanWaiters = (checkpoint: 'entry_rfid' | 'exit_rfid', uid: string) => {
+		const waiters = rfidScanWaitersRef.current.filter((waiter) => waiter.checkpoint === checkpoint);
+		if (waiters.length === 0) {
+			return;
+		}
+
+		rfidScanWaitersRef.current = rfidScanWaitersRef.current.filter(
+			(waiter) => waiter.checkpoint !== checkpoint
+		);
+
+		for (const waiter of waiters) {
+			waiter.resolve(uid);
+		}
+	};
+
+	// const markRfidScanned = (checkpoint: 'entry_rfid' | 'exit_rfid', uid: string) => {
+	// 	const normalizedUid = uid.trim();
+	// 	if (!normalizedUid) {
+	// 		return;
+	// 	}
+
+	// 	const hasWaiters = rfidScanWaitersRef.current.some(
+	// 		(waiter) => waiter.checkpoint === checkpoint
+	// 	);
+	// 	if (hasWaiters) {
+	// 		resolveRfidScanWaiters(checkpoint, normalizedUid);
+	// 		rfidScanUidRef.current[checkpoint] = '';
+	// 		return;
+	// 	}
+
+	// 	rfidScanUidRef.current[checkpoint] = normalizedUid;
+	// };
+
+	const markRfidScanned = (checkpoint: 'entry_rfid' | 'exit_rfid', uid: string) => {
+    const normalizedUid = uid.trim();
+    if (!normalizedUid) {
+        return;
+    }
+
+    const hasWaiters = rfidScanWaitersRef.current.some(
+        (waiter) => waiter.checkpoint === checkpoint
+    );
+    if (hasWaiters) {
+        resolveRfidScanWaiters(checkpoint, normalizedUid);
+        rfidScanUidRef.current[checkpoint] = '';
+        return;
+    }
+
+    rfidScanUidRef.current[checkpoint] = normalizedUid;
+};
+
+	const waitForRfidScan = (checkpoint: 'entry_rfid' | 'exit_rfid') => {
+		const cachedUid = rfidScanUidRef.current[checkpoint];
+		if (cachedUid) {
+			rfidScanUidRef.current[checkpoint] = '';
+			return Promise.resolve(cachedUid);
+		}
+
+		return new Promise<string>((resolve) => {
+			rfidScanWaitersRef.current.push({ checkpoint, resolve });
+		});
+	};
+
 	const resolveSessionWaiters = (correlationId: string, sessionIdValue: string) => {
 		const waiters = sessionWaitersRef.current.filter((waiter) => waiter.correlationId === correlationId);
 		if (waiters.length === 0) {
@@ -302,15 +429,24 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		});
 	};
 
-	const waitForGateClosed = (gateId: GateId) => {
-		const gateIsOpen = gateId === 'entry-gate' ? entryGateOpenRef.current : exitGateOpenRef.current;
-		if (!gateIsOpen || !isRealtimeGateSyncActive()) {
-			return Promise.resolve();
+	const waitForGateOrRfidAccepted = async (
+		gateId: GateId,
+		checkpoint: 'entry_rfid' | 'exit_rfid'
+	) => {
+		const gatePromise = waitForGateOpen(gateId).then(() => 'gate' as const);
+		const rfidPromise = waitForRfidAccepted(checkpoint).then(() => 'rfid' as const);
+		const result = await Promise.race([gatePromise, rfidPromise]);
+
+		clearRfidWaiters(checkpoint);
+
+		if (result === 'rfid') {
+			const gateIsOpen = gateId === 'entry-gate' ? entryGateOpenRef.current : exitGateOpenRef.current;
+			if (!gateIsOpen) {
+				applyGateState(gateId, 'open');
+			}
 		}
 
-		return new Promise<void>((resolve) => {
-			gateClosedWaitersRef.current[gateId].push({ resolve, timerId: 0 });
-		});
+		return result;
 	};
 
 	const waitForSessionCreated = (correlationId: string) => {
@@ -469,6 +605,74 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
+	const parseRfidPayload = (payload?: Record<string, unknown>) => {
+		const plateNumber =
+			typeof payload?.plateNumber === 'string' ? normalizePlateNumber(payload.plateNumber) : '';
+		const expectedPlateNumber =
+			typeof payload?.expectedPlateNumber === 'string'
+				? normalizePlateNumber(payload.expectedPlateNumber)
+				: '';
+		const reason = typeof payload?.reason === 'string' ? payload.reason : '';
+		return { plateNumber, expectedPlateNumber, reason };
+	};
+
+	const handleRfidAcceptedEvent = (payload: Record<string, unknown>) => {
+		const { plateNumber, expectedPlateNumber } = parseRfidPayload(payload);
+		const activePlate = activeVehicleRef.current
+			? normalizePlateNumber(activeVehicleRef.current.plateNumber)
+			: '';
+		if (
+			activePlate &&
+			plateNumber &&
+			plateNumber !== activePlate &&
+			expectedPlateNumber &&
+			expectedPlateNumber !== activePlate
+		) {
+			pushLog('RFID ignored', `Plate ${plateNumber} does not match active vehicle`);
+			return;
+		}
+
+		const checkpoint = currentRfidCheckpointRef.current;
+		markRfidAccepted(checkpoint);
+		setResult('RFID accepted. Vehicle may proceed.');
+		pushLog(
+			'RFID accepted',
+			`${checkpoint} accepted${plateNumber ? ` (${plateNumber})` : ''}`
+		);
+	};
+
+	const handleRfidRejectedEvent = (payload: Record<string, unknown>) => {
+		const { plateNumber, expectedPlateNumber, reason } = parseRfidPayload(payload);
+		const reasonMessage = reason
+			? reason === 'plate_mismatch'
+				? 'Plate mismatch. Waiting for operator review.'
+				: `RFID rejected (${reason})`
+			: 'RFID rejected.';
+		setResult(reasonMessage);
+		pushLog(
+			'RFID rejected',
+			`${reasonMessage}${plateNumber ? `: ${plateNumber}` : ''}${
+				expectedPlateNumber ? ` -> ${expectedPlateNumber}` : ''
+			}`
+		);
+	};
+
+	const handlePlateMismatchAlert = (payload: Record<string, unknown>) => {
+		const expectedPlateNumber =
+			typeof payload.expectedPlateNumber === 'string'
+				? normalizePlateNumber(payload.expectedPlateNumber)
+				: '';
+		const actualPlateNumber =
+			typeof payload.actualPlateNumber === 'string'
+				? normalizePlateNumber(payload.actualPlateNumber)
+				: '';
+		setResult('Plate mismatch. Waiting for operator review.');
+		pushLog(
+			'Plate mismatch',
+			`${actualPlateNumber || 'unknown'} != ${expectedPlateNumber || 'unknown'}`
+		);
+	};
+
 	useEffect(() => {
 		const socket = connectSocket();
 		simulatorSocketRef.current = socket;
@@ -497,6 +701,51 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		};
 
 		const unsubscribeRealtime = subscribeRealtime(socket, (event) => {
+			// if (event.eventName === 'rfid.scan.requested') {
+			// 	const payload = (event.payload ?? {}) as Record<string, unknown>;
+			// 	const uid = typeof payload.uid === 'string' ? payload.uid : '';
+			// 	const checkpoint =
+			// 		payload.checkpoint === 'exit_rfid'
+			// 			? 'exit_rfid'
+			// 			: payload.checkpoint === 'entry_rfid'
+			// 				? 'entry_rfid'
+			// 				: currentRfidCheckpointRef.current;
+			// 	if (uid) {
+			// 		markRfidScanned(checkpoint, uid);
+			// 	}
+			// 	return;
+			// }
+
+			if (event.eventName === 'rfid.scan.requested') {
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    const uid = typeof payload.uid === 'string' ? payload.uid : '';
+    const checkpoint =
+        payload.checkpoint === 'exit_rfid'
+            ? 'exit_rfid'
+            : payload.checkpoint === 'entry_rfid'
+                ? 'entry_rfid'
+                : null; // ← không fallback nữa
+    if (uid && checkpoint) { // ← chỉ route khi có checkpoint rõ ràng
+        markRfidScanned(checkpoint, uid);
+    }
+    return;
+}
+
+			if (event.eventName === 'rfid.scan.accepted') {
+				handleRfidAcceptedEvent((event.payload ?? {}) as Record<string, unknown>);
+				return;
+			}
+
+			if (event.eventName === 'rfid.scan.rejected') {
+				handleRfidRejectedEvent((event.payload ?? {}) as Record<string, unknown>);
+				return;
+			}
+
+			if (event.eventName === 'alert.plate_mismatch') {
+				handlePlateMismatchAlert((event.payload ?? {}) as Record<string, unknown>);
+				return;
+			}
+
 			if (event.eventName === 'session.created') {
 				const createdSessionId = typeof event.sessionId === 'string' ? event.sessionId : undefined;
 				const sessionStatus = typeof event.payload?.status === 'string' ? event.payload.status : undefined;
@@ -729,10 +978,15 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 			await notifyCheckpoint('entry_rfid', nextPlateNumber, sessionIdValue, normalizedCorrelationId);
 
 			if (isRealtimeGateSyncActive()) {
-				setResult('Waiting for backend gate state');
-				pushLog('Gate awaiting socket', 'Waiting for backend signal to open entry gate');
-				await waitForGateOpen('entry-gate');
-				pushLog('Barrier opened', 'Entry gate opened via backend API event');
+				setResult('Waiting for RFID acceptance or operator gate open.');
+				pushLog('RFID wait', 'Waiting for RFID acceptance or operator gate open');
+				const gateResult = await waitForGateOrRfidAccepted('entry-gate', 'entry_rfid');
+				pushLog(
+					'Barrier opened',
+					gateResult === 'rfid'
+						? 'RFID accepted. Opening entry gate and proceeding.'
+						: 'Entry gate opened via backend API event'
+				);
 			} else {
 				applyGateState('entry-gate', 'open');
 				pushLog('Barrier opened', 'Entry gate opened locally');
@@ -1002,10 +1256,15 @@ export const SimulatorPanel = ({ onSessionCreated }: SimulatorPanelProps) => {
 		await notifyCheckpoint('entry_rfid', nextPlateNumber, '', correlationId);
 
 		if (isRealtimeGateSyncActive()) {
-			setResult('Waiting for backend gate state');
-			pushLog('Gate awaiting socket', 'Waiting for backend signal to open entry gate');
-			await waitForGateOpen('entry-gate');
-			pushLog('Barrier opened', 'Entry gate opened via backend API event');
+			setResult('Waiting for RFID acceptance or operator gate open.');
+			pushLog('RFID wait', 'Waiting for RFID acceptance or operator gate open');
+			const gateResult = await waitForGateOrRfidAccepted('entry-gate', 'entry_rfid');
+			pushLog(
+				'Barrier opened',
+				gateResult === 'rfid'
+					? 'RFID accepted. Opening entry gate and proceeding.'
+					: 'Entry gate opened via backend API event'
+			);
 		} else {
 			applyGateState('entry-gate', 'open');
 			pushLog('Barrier opened', 'Entry gate lifted after check-in');
@@ -1139,45 +1398,67 @@ const simulateExit = async (vehicle: ParkedVehicle) => {
 		// Bước 2: xe dừng tại exit checkpoint, chờ quét RFID
 		setStage('waiting_rfid');
 		currentRfidCheckpointRef.current = 'exit_rfid';
+
+rfidScanUidRef.current['exit_rfid'] = '';
+
 		setResult('Xe đang chờ quét thẻ RFID tại cổng ra');
 		pushLog('Vehicle stopped', 'Xe dừng tại exit checkpoint, chờ quét RFID');
 
 		// Notify backend xe đã đến exit checkpoint
 		await notifyCheckpoint('exit_rfid', vehicle.plateNumber, vehicle.sessionId, correlationId);
 
-		// Bước 3: chờ operator/backend xác nhận RFID → mở gate
-		// Gate chỉ mở sau khi backend xác nhận RFID hợp lệ
-		if (isRealtimeGateSyncActive()) {
-			setResult('Chờ operator xác nhận và mở cổng ra...');
-			pushLog('RFID wait', 'Chờ ESP32 quét thẻ và backend xác nhận');
-			await waitForGateOpen('exit-gate');
-			pushLog('Barrier opened', 'Cổng ra mở sau khi RFID được xác nhận');
-		} else {
-			applyGateState('exit-gate', 'open');
-			pushLog('Barrier opened', 'Cổng ra mở (local mode)');
+		// Chờ quét RFID thật trước khi xử lý cho xe ra cổng
+		const scannedUid = await waitForRfidScan('exit_rfid');
+		pushLog('RFID scanned', `Exit RFID scanned: ${scannedUid}`);
+
+		let exitResult: Awaited<ReturnType<typeof completeSimulatorParkingExit>> | null = null;
+		try {
+			exitResult = await completeSimulatorParkingExit({
+				sessionId: vehicle.sessionId,
+				exitPlateNumber: vehicle.plateNumber,
+				paymentStatus: 'pending',
+				correlationId
+			});
+		} catch (error) {
+			if (error instanceof ApiError && error.status === 409) {
+				setResult('Exit already processed. Waiting for gate to open.');
+				pushLog('Exit already processed', `Session ${vehicle.sessionId} already completed`);
+			} else {
+				throw error;
+			}
 		}
 
-		// Bước 4: hoàn thành session trong DB ngay khi gate mở
-		// Không chờ gate đóng — gate đóng do xe đi qua barrier trigger handleExitBarrierPassed
-		const exitResult = await completeSimulatorParkingExit({
-			sessionId: vehicle.sessionId,
-			exitPlateNumber: vehicle.plateNumber,
-			paymentStatus: 'pending',
-			correlationId
-		});
-
-		if (exitResult.gate_action !== 'open') {
+		if (exitResult && exitResult.gate_action !== 'open') {
 			throw new Error(
 				exitResult.session.is_plate_mismatch
-					? 'Biển số không khớp, xe bị từ chối'
-					: 'Xe chưa thể rời bãi'
+					? 'Plate mismatch. Vehicle denied.'
+					: 'Vehicle cannot exit yet.'
 			);
 		}
 
-		pushLog('Exit persisted', `Lưu transaction cho session ${vehicle.sessionId}`);
-		setResult(
-			`Exit OK: ${exitResult.transaction.payment_status} / ${exitResult.transaction.final_amount}`
-		);
+		if (exitResult) {
+			pushLog('Exit persisted', `Transaction stored for session ${vehicle.sessionId}`);
+			setResult(
+				`Exit OK: ${exitResult.transaction.payment_status} / ${exitResult.transaction.final_amount}`
+			);
+		}
+
+		if (isRealtimeGateSyncActive()) {
+			pushLog('Gate wait', 'Waiting for exit gate to open after RFID approval');
+			const gateResult = await Promise.race([
+				waitForGateOpen('exit-gate').then(() => 'gate' as const),
+				wait(4000).then(() => 'timeout' as const)
+			]);
+			if (gateResult === 'timeout') {
+				applyGateState('exit-gate', 'open');
+				pushLog('Barrier opened', 'Exit gate opened locally after timeout');
+			} else {
+				pushLog('Barrier opened', 'Exit gate opened by backend signal');
+			}
+		} else {
+			applyGateState('exit-gate', 'open');
+			pushLog('Barrier opened', 'Exit gate opened (local mode)');
+		}
 
 		// Bước 5: xe đi qua barrier → handleExitBarrierPassed đóng gate
 		// chờ 3D scene animate xe ra ngoài hoàn toàn

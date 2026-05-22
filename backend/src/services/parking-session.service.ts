@@ -57,6 +57,20 @@ interface AssignSlotInput {
 	correlation_id?: string;
 }
 
+interface HardwareRfidScanInput {
+	uid: string;
+	checkpoint: 'entry_rfid' | 'exit_rfid';
+	plate_number: string;
+	correlation_id?: string;
+}
+
+interface HardwareRfidScanResult {
+	checkpoint: 'entry_rfid' | 'exit_rfid';
+	sessionId?: string;
+	gate_action: 'open' | 'deny';
+	reason?: string;
+}
+
 const normalizeText = (value: string) => value.trim().toUpperCase();
 
 const resolveSlotTypeByVehicle = (vehicleType: VehicleType) => {
@@ -180,7 +194,7 @@ export const createEntrySession = async (input: EntryInput) => {
 
 	return {
 		session,
-		gate_action: isPlateMismatch ? 'deny' : 'open',
+		gate_action: (isPlateMismatch ? 'deny' : 'open') as 'deny' | 'open',
 		reason: isPlateMismatch ? 'plate_mismatch' : undefined
 	};
 };
@@ -294,6 +308,90 @@ export const verifyRfidPlate = async (input: VerifyRfidPlateInput) => {
 		rfid_card_active: rfidCard.is_active,
 		rfid_card_id: rfidCard._id.toString(),
 		vehicle_id: vehicle._id.toString()
+	};
+};
+
+export const processHardwareRfidScan = async (
+	input: HardwareRfidScanInput
+): Promise<HardwareRfidScanResult> => {
+	const correlationId = input.correlation_id ?? randomUUID();
+	const normalizedUid = normalizeText(input.uid);
+	const normalizedPlate = normalizeText(input.plate_number);
+	const checkpoint = input.checkpoint === 'exit_rfid' ? 'exit_rfid' : 'entry_rfid';
+
+	if (!normalizedPlate) {
+		throw new AppError('Observed plate number is required', 400);
+	}
+
+	if (checkpoint === 'entry_rfid') {
+		const entryResult = await createEntrySession({
+			uid: normalizedUid,
+			plate_number: normalizedPlate,
+			correlation_id: correlationId
+		});
+
+		if (entryResult.gate_action === 'open') {
+			const gateCommand = await hardwareGateway.openGate('entry-gate', {
+				commandId: randomUUID(),
+				sessionId: entryResult.session._id.toString(),
+				correlationId,
+				requestedBy: 'backend',
+				timeoutMs: 5000,
+				action: 'open'
+			});
+
+			publishRealtimeEvent({
+				eventName: 'gate.command.sent',
+				correlationId,
+				sessionId: entryResult.session._id.toString(),
+				payload: {
+					gateId: 'entry-gate',
+					command: 'open',
+					reason: 'rfid_auto_open',
+					result: gateCommand.result,
+					commandId: gateCommand.commandId
+				}
+			});
+			publishRealtimeEvent({
+				eventName: 'gate.state.changed',
+				correlationId,
+				sessionId: entryResult.session._id.toString(),
+				payload: {
+					gateId: 'entry-gate',
+					state: gateCommand.stateAfter
+				}
+			});
+		}
+
+		return {
+			checkpoint,
+			sessionId: entryResult.session._id.toString(),
+			gate_action: entryResult.gate_action,
+			reason: entryResult.reason
+		};
+	}
+
+	const rfidCard = await findRfidCardByUid(normalizedUid);
+	if (!rfidCard) {
+		throw new AppError('RFID card not found', 404);
+	}
+
+	const activeSession = await findActiveSessionByRfidCardId(rfidCard._id.toString());
+	if (!activeSession) {
+		throw new AppError('Active parking session not found', 404);
+	}
+
+	const exitResult = await completeExitSession({
+		session_id: activeSession._id.toString(),
+		exit_plate_number: normalizedPlate,
+		correlation_id: correlationId
+	});
+
+	return {
+		checkpoint,
+		sessionId: activeSession._id.toString(),
+		gate_action: exitResult.gate_action,
+		reason: exitResult.gate_action === 'deny' ? 'plate_mismatch' : undefined
 	};
 };
 
@@ -569,6 +667,6 @@ export const completeExitSession = async (input: ExitInput) => {
 	return {
 		session: updatedSession,
 		transaction,
-		gate_action: plateMismatch ? 'deny' : 'open'
+		gate_action: (plateMismatch ? 'deny' : 'open') as 'deny' | 'open'
 	};
 };

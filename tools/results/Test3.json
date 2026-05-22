@@ -1,0 +1,317 @@
+{
+  "testName": "Test3",
+  "durationMs": 15000,
+  "generatedAt": "2026-05-21T14:13:53.551Z",
+  "sentTotal": 50,
+  "acks": 50,
+  "lostCount": 0,
+  "lostSeqs": [],
+  "stats": {
+    "avgRttMs": 133,
+    "p95RttMs": 269,
+    "p99RttMs": 286,
+    "maxRttMs": 286
+  },
+  "samples": [
+    {
+      "seq": 1,
+      "label": "[RTT]",
+      "rtt": 15,
+      "details": "seq=1 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 2,
+      "label": "[RTT]",
+      "rtt": 54,
+      "details": "seq=2 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 3,
+      "label": "[RTT]",
+      "rtt": 57,
+      "details": "seq=3 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 4,
+      "label": "[RTT]",
+      "rtt": 57,
+      "details": "seq=4 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 5,
+      "label": "[RTT]",
+      "rtt": 57,
+      "details": "seq=5 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 6,
+      "label": "[RTT]",
+      "rtt": 59,
+      "details": "seq=6 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 7,
+      "label": "[RTT]",
+      "rtt": 59,
+      "details": "seq=7 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 8,
+      "label": "[RTT]",
+      "rtt": 60,
+      "details": "seq=8 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 9,
+      "label": "[RTT]",
+      "rtt": 60,
+      "details": "seq=9 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 10,
+      "label": "[RTT]",
+      "rtt": 59,
+      "details": "seq=10 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 11,
+      "label": "[RTT]",
+      "rtt": 59,
+      "details": "seq=11 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 12,
+      "label": "[RTT]",
+      "rtt": 88,
+      "details": "seq=12 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 13,
+      "label": "[RTT]",
+      "rtt": 121,
+      "details": "seq=13 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 14,
+      "label": "[RTT]",
+      "rtt": 128,
+      "details": "seq=14 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 15,
+      "label": "[RTT]",
+      "rtt": 134,
+      "details": "seq=15 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 16,
+      "label": "[RTT]",
+      "rtt": 143,
+      "details": "seq=16 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 17,
+      "label": "[RTT]",
+      "rtt": 144,
+      "details": "seq=17 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 18,
+      "label": "[RTT]",
+      "rtt": 145,
+      "details": "seq=18 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 19,
+      "label": "[RTT]",
+      "rtt": 146,
+      "details": "seq=19 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 20,
+      "label": "[RTT]",
+      "rtt": 150,
+      "details": "seq=20 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 21,
+      "label": "[RTT]",
+      "rtt": 13,
+      "details": "seq=21 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 22,
+      "label": "[RTT]",
+      "rtt": 107,
+      "details": "seq=22 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 23,
+      "label": "[RTT]",
+      "rtt": 116,
+      "details": "seq=23 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 24,
+      "label": "[RTT]",
+      "rtt": 119,
+      "details": "seq=24 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 25,
+      "label": "[RTT]",
+      "rtt": 120,
+      "details": "seq=25 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 26,
+      "label": "[RTT]",
+      "rtt": 122,
+      "details": "seq=26 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 27,
+      "label": "[RTT]",
+      "rtt": 124,
+      "details": "seq=27 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 28,
+      "label": "[RTT]",
+      "rtt": 124,
+      "details": "seq=28 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 29,
+      "label": "[RTT]",
+      "rtt": 125,
+      "details": "seq=29 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 30,
+      "label": "[RTT]",
+      "rtt": 127,
+      "details": "seq=30 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 31,
+      "label": "[RTT]",
+      "rtt": 15,
+      "details": "seq=31 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 32,
+      "label": "[RTT]",
+      "rtt": 92,
+      "details": "seq=32 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 33,
+      "label": "[RTT]",
+      "rtt": 119,
+      "details": "seq=33 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 34,
+      "label": "[RTT]",
+      "rtt": 124,
+      "details": "seq=34 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 35,
+      "label": "[RTT]",
+      "rtt": 125,
+      "details": "seq=35 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 36,
+      "label": "[RTT]",
+      "rtt": 166,
+      "details": "seq=36 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 37,
+      "label": "[RTT]",
+      "rtt": 179,
+      "details": "seq=37 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 38,
+      "label": "[RTT]",
+      "rtt": 179,
+      "details": "seq=38 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 39,
+      "label": "[RTT]",
+      "rtt": 201,
+      "details": "seq=39 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 40,
+      "label": "[RTT]",
+      "rtt": 206,
+      "details": "seq=40 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 41,
+      "label": "[RTT]",
+      "rtt": 156,
+      "details": "seq=41 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 42,
+      "label": "[RTT]",
+      "rtt": 163,
+      "details": "seq=42 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 43,
+      "label": "[RTT]",
+      "rtt": 192,
+      "details": "seq=43 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 44,
+      "label": "[RTT]",
+      "rtt": 232,
+      "details": "seq=44 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 45,
+      "label": "[RTT]",
+      "rtt": 258,
+      "details": "seq=45 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 46,
+      "label": "[RTT]",
+      "rtt": 260,
+      "details": "seq=46 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 47,
+      "label": "[RTT]",
+      "rtt": 260,
+      "details": "seq=47 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 48,
+      "label": "[RTT]",
+      "rtt": 269,
+      "details": "seq=48 gateId=exit-gate command=open"
+    },
+    {
+      "seq": 49,
+      "label": "[RTT]",
+      "rtt": 286,
+      "details": "seq=49 gateId=exit-gate command=close"
+    },
+    {
+      "seq": 50,
+      "label": "[RTT]",
+      "rtt": 286,
+      "details": "seq=50 gateId=exit-gate command=open"
+    }
+  ]
+}

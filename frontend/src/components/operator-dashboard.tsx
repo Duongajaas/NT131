@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EventFeed } from './event-feed';
 import {
 	listParkingSlots,
@@ -37,13 +37,33 @@ const parseVehicleStatePayload = (event: RealtimeEnvelope | undefined): VehicleS
 export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	const [slotBusy, setSlotBusy] = useState(false);
 	const [manualGateBusy, setManualGateBusy] = useState(false);
-	const [expectedPlateByUid, setExpectedPlateByUid] = useState('');
+	const [expectedEntryPlateByUid, setExpectedEntryPlateByUid] = useState('');
+	const [expectedExitPlateByUid, setExpectedExitPlateByUid] = useState('');
+	const [displayEntryUid, setDisplayEntryUid] = useState('');
+	const [displayExitUid, setDisplayExitUid] = useState('');
+	const [displayEntryPlate, setDisplayEntryPlate] = useState('');
+	const [displayExitPlate, setDisplayExitPlate] = useState('');
+	const clearTimerRef = useRef<number | null>(null);
 	const [slotRows, setSlotRows] = useState<ParkingSlotRecord[]>([]);
+	const [entryMatchSnapshot, setEntryMatchSnapshot] = useState<{
+    detectedPlate: string;
+    expectedPlate: string;
+} | null>(null);
+
+const lastSnapshotEventIdRef = useRef('');
+
+const pendingLookupUidRef = useRef('');
+const pendingLookupCheckpointRef = useRef<'entry_rfid' | 'exit_rfid' | undefined>(undefined);
 
 	const events = useOperatorStore((state) => state.events);
 	const sessions = useOperatorStore((state) => state.sessions);
 	const entryGateState = useOperatorStore((state) => state.entryGateState);
 	const exitGateState = useOperatorStore((state) => state.exitGateState);
+
+	const displayEntryPlateRef = useRef('');
+useEffect(() => {
+    displayEntryPlateRef.current = displayEntryPlate;
+}, [displayEntryPlate]);
 
 	const latestEntryVehicleEvent = useMemo(
 		() =>
@@ -89,46 +109,98 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 	);
 	const latestRejectedRfidCorrelationId = latestRejectedRfidEvent?.correlationId;
 	const latestExitCorrelationId = latestExitVehicleEvent?.correlationId;
-	const latestRfidEvent = useMemo(
-		() =>
-			events.find((event) => {
-				if (
-					event.eventName !== 'hardware.rfid.scan' &&
-					event.eventName !== 'rfid.scan.requested' &&
-					event.eventName !== 'rfid.scan.accepted' &&
-					event.eventName !== 'rfid.scan.rejected'
-				) {
-					return false;
-				}
+	// const latestRfidEvent = useMemo(
+	// 	() =>
+	// 		events.find((event) => {
+	// 			if (
+	// 				event.eventName !== 'hardware.rfid.scan' &&
+	// 				event.eventName !== 'rfid.scan.requested' &&
+	// 				event.eventName !== 'rfid.scan.accepted' &&
+	// 				event.eventName !== 'rfid.scan.rejected'
+	// 			) {
+	// 				return false;
+	// 			}
 
-				const payload = (event.payload ?? {}) as Record<string, unknown>;
-				return typeof payload.uid === 'string' && payload.uid.length > 0;
-			}),
-		[events]
-	);
+	// 			const payload = (event.payload ?? {}) as Record<string, unknown>;
+	// 			return typeof payload.uid === 'string' && payload.uid.length > 0;
+	// 		}),
+	// 	[events]
+	// );
+
+	const latestRfidEvent = useMemo(
+    () =>
+        events.find((event) => {
+            if (
+                event.eventName !== 'hardware.rfid.scan' &&
+                event.eventName !== 'rfid.scan.requested'
+            ) {
+                return false; // chỉ giữ 2 event scan thật, bỏ accepted/rejected
+            }
+
+            const payload = (event.payload ?? {}) as Record<string, unknown>;
+            return typeof payload.uid === 'string' && payload.uid.length > 0;
+        }),
+    [events]
+);
+
 	const latestScannedUid = useMemo(() => {
 		const payload = (latestRfidEvent?.payload ?? {}) as Record<string, unknown>;
 		return typeof payload.uid === 'string' ? normalizeText(payload.uid) : '';
 	}, [latestRfidEvent]);
-	const normalizedExpectedPlateByUid = normalizeText(expectedPlateByUid || '');
+	const latestRfidCheckpoint = useMemo(() => {
+		const payload = (latestRfidEvent?.payload ?? {}) as Record<string, unknown>;
+		if (payload.checkpoint === 'entry_rfid' || payload.checkpoint === 'exit_rfid') {
+			return payload.checkpoint;
+		}
+		return undefined;
+	}, [latestRfidEvent]);
+	const latestRfidDecisionEvent = useMemo(
+		() =>
+			events.find(
+				(event) => event.eventName === 'rfid.scan.accepted' || event.eventName === 'rfid.scan.rejected'
+			),
+		[events]
+	);
+	const normalizedExpectedEntryPlateByUid = normalizeText(expectedEntryPlateByUid || '');
+	const normalizedExpectedExitPlateByUid = normalizeText(expectedExitPlateByUid || '');
 
-	const resolvePlateMatchStatus = (plateValue: string): PlateMatchStatus => {
+	const resolvePlateMatchStatus = (plateValue: string, expectedPlate: string): PlateMatchStatus => {
 		const normalizedPlate = normalizeText(plateValue || '');
-		if (!normalizedPlate || !normalizedExpectedPlateByUid) {
+		if (!normalizedPlate || !expectedPlate) {
 			return 'neutral';
 		}
 
-		return normalizedPlate === normalizedExpectedPlateByUid ? 'good' : 'danger';
+		return normalizedPlate === expectedPlate ? 'good' : 'danger';
 	};
 
-	const entryPlateForMatch = latestDetectedPlate;
-	const entryPlateMatchStatus = resolvePlateMatchStatus(entryPlateForMatch);
+	// const entryPlateForMatch = displayEntryPlate;
+	// const entryPlateMatchStatus = resolvePlateMatchStatus(
+	// 	entryPlateForMatch,
+	// 	normalizedExpectedEntryPlateByUid
+	// );
+
+	const entryPlateMatchStatus: PlateMatchStatus = useMemo(() => {
+		console.log('Recalculating entry plate match status with snapshot:', entryMatchSnapshot);
+    if (!entryMatchSnapshot?.detectedPlate || !entryMatchSnapshot?.expectedPlate) {
+        return 'neutral';
+    }
+    return resolvePlateMatchStatus(
+        entryMatchSnapshot.detectedPlate,
+        entryMatchSnapshot.expectedPlate
+    );
+}, [entryMatchSnapshot]);
+
+// 	const entryMatchCacheRef = useRef<{ plate: string; expected: string }>({
+//     plate: '',
+//     expected: ''
+// });
+
 	const exitPlateMatchStatus =
 		latestRejectedRfidEvent && latestRejectedRfidCorrelationId && latestExitCorrelationId
 			? latestRejectedRfidCorrelationId === latestExitCorrelationId
 				? 'danger'
-				: resolvePlateMatchStatus(latestExitDetectedPlate)
-			: resolvePlateMatchStatus(latestExitDetectedPlate);
+				: resolvePlateMatchStatus(displayExitPlate, normalizedExpectedExitPlateByUid)
+			: resolvePlateMatchStatus(displayExitPlate, normalizedExpectedExitPlateByUid);
 
 	const [lastSlotEventId, setLastSlotEventId] = useState('');
 	const occupiedSlots = useMemo(
@@ -151,6 +223,56 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			setSlotBusy(false);
 		}
 	};
+
+// 	useEffect(() => {
+//     if (displayEntryPlate) {
+//         entryMatchCacheRef.current.plate = displayEntryPlate;
+//     }
+// }, [displayEntryPlate]);
+
+// useEffect(() => {
+//     if (!displayEntryPlate) {
+//         return;
+//     }
+//     setEntryMatchSnapshot((prev) => {
+//         if (!prev || prev.detectedPlate) {
+//             return prev; // đã có plate rồi, không ghi đè
+//         }
+//         return { ...prev, detectedPlate: displayEntryPlate };
+//     });
+// }, [displayEntryPlate]);
+
+
+useEffect(() => {
+    if (!displayEntryPlate) return;
+    setEntryMatchSnapshot((prev) => {
+        if (!prev) return prev;
+        // Luôn cập nhật detectedPlate nếu snapshot đang thiếu
+        if (prev.detectedPlate) return prev; // chỉ skip nếu đã có rồi
+        return { ...prev, detectedPlate: displayEntryPlate };
+    });
+}, [displayEntryPlate]);
+
+useEffect(() => {
+    if (!normalizedExpectedEntryPlateByUid) {
+        return;
+    }
+    setEntryMatchSnapshot((prev) =>
+        prev ? { ...prev, expectedPlate: normalizedExpectedEntryPlateByUid } : prev
+    );
+}, [normalizedExpectedEntryPlateByUid]);
+
+useEffect(() => {
+    if (!latestRfidDecisionEvent) {
+        return;
+    }
+    // Giữ snapshot thêm 2500ms để UI kịp hiển thị kết quả
+    const timer = window.setTimeout(() => {
+        setEntryMatchSnapshot(null);
+    }, 2500);
+    return () => window.clearTimeout(timer);
+}, [latestRfidDecisionEvent?.eventId]);
+
 
 	useEffect(() => {
 		if (!token) {
@@ -196,8 +318,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 
 	useEffect(() => {
 		const normalizedUid = normalizeText(latestScannedUid);
-		if (!normalizedUid) {
-			setExpectedPlateByUid('');
+		if (!normalizedUid || !latestRfidCheckpoint) {
 			return;
 		}
 
@@ -205,13 +326,23 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 		const timer = window.setTimeout(() => {
 			void findVehiclePlateByUid(normalizedUid)
 				.then((plate) => {
-					if (!cancelled) {
-						setExpectedPlateByUid(plate || '');
+					if (cancelled) {
+						return;
+					}
+					if (latestRfidCheckpoint === 'entry_rfid') {
+						setExpectedEntryPlateByUid(plate || '');
+					} else {
+						setExpectedExitPlateByUid(plate || '');
 					}
 				})
 				.catch(() => {
-					if (!cancelled) {
-						setExpectedPlateByUid('');
+					if (cancelled) {
+						return;
+					}
+					if (latestRfidCheckpoint === 'entry_rfid') {
+						setExpectedEntryPlateByUid('');
+					} else {
+						setExpectedExitPlateByUid('');
 					}
 				});
 		}, 300);
@@ -220,7 +351,132 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 			cancelled = true;
 			window.clearTimeout(timer);
 		};
-	}, [latestScannedUid, token]);
+	}, [latestScannedUid, latestRfidCheckpoint, token]);
+
+	// useEffect(() => {
+	// 	if (!latestRfidCheckpoint) {
+	// 		return;
+	// 	}
+
+	// 	if (latestRfidCheckpoint === 'entry_rfid') {
+	// 		setDisplayEntryUid(latestScannedUid);
+	// 		return;
+	// 	}
+
+	// 	setDisplayExitUid(latestScannedUid);
+	// }, [latestScannedUid, latestRfidCheckpoint]);
+
+// 	useEffect(() => {
+//     if (!latestScannedUid || latestRfidCheckpoint !== 'entry_rfid') {
+//         return;
+//     }
+//     // Lưu plate đang hiển thị tại thời điểm scan
+//     setEntryMatchSnapshot({
+//         detectedPlate: displayEntryPlate,
+//         expectedPlate: '' // sẽ fill sau khi lookup xong
+//     });
+// }, [latestScannedUid, latestRfidCheckpoint]);
+
+	useEffect(() => {
+    if (!latestScannedUid || latestRfidCheckpoint !== 'entry_rfid') return;
+
+    const currentEventId = latestRfidEvent?.eventId ?? '';
+    if (!currentEventId || currentEventId === lastSnapshotEventIdRef.current) return;
+    lastSnapshotEventIdRef.current = currentEventId;
+
+    // Lưu vào ref để lookup dùng — không phụ thuộc vào reactive state
+    pendingLookupUidRef.current = latestScannedUid;
+    pendingLookupCheckpointRef.current = 'entry_rfid';
+
+    setDisplayEntryUid(latestScannedUid);
+    setEntryMatchSnapshot({
+        detectedPlate: displayEntryPlateRef.current,
+        expectedPlate: ''
+    });
+}, [latestScannedUid, latestRfidCheckpoint, latestRfidEvent?.eventId]);
+
+useEffect(() => {
+    if (!latestScannedUid || latestRfidCheckpoint !== 'exit_rfid') return;
+
+    const currentEventId = latestRfidEvent?.eventId ?? '';
+    if (!currentEventId) return;
+
+    pendingLookupUidRef.current = latestScannedUid;
+    pendingLookupCheckpointRef.current = 'exit_rfid';
+
+    setDisplayExitUid(latestScannedUid);
+}, [latestScannedUid, latestRfidCheckpoint, latestRfidEvent?.eventId]);
+
+useEffect(() => {
+    const uid = pendingLookupUidRef.current;
+    const checkpoint = pendingLookupCheckpointRef.current;
+
+    console.log('[lookup] triggered from snapshot', { uid, checkpoint });
+    if (!uid || !checkpoint) return;
+
+    // Clear ref ngay để không lookup lại lần sau
+    pendingLookupUidRef.current = '';
+    pendingLookupCheckpointRef.current = undefined;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+        void findVehiclePlateByUid(uid)
+            .then((plate) => {
+                console.log('[lookup] result:', { plate, cancelled, checkpoint });
+                if (cancelled) return;
+                if (checkpoint === 'entry_rfid') {
+                    setExpectedEntryPlateByUid(plate || '');
+                } else {
+                    setExpectedExitPlateByUid(plate || '');
+                }
+            })
+            .catch(() => {
+                if (cancelled) return;
+                if (checkpoint === 'entry_rfid') setExpectedEntryPlateByUid('');
+                else setExpectedExitPlateByUid('');
+            });
+    }, 300);
+
+    return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+    };
+}, [entryMatchSnapshot]);
+
+	useEffect(() => {
+		setDisplayEntryPlate(latestDetectedPlate);
+	}, [latestDetectedPlate]);
+
+	useEffect(() => {
+		setDisplayExitPlate(latestExitDetectedPlate);
+	}, [latestExitDetectedPlate]);
+
+	useEffect(() => {
+    if (!latestScannedUid || !latestRfidCheckpoint) return;
+    if (latestRfidCheckpoint === 'exit_rfid') {
+        setDisplayExitUid(latestScannedUid);
+    }
+}, [latestScannedUid, latestRfidCheckpoint]);
+
+	useEffect(() => {
+		if (!latestRfidDecisionEvent) {
+			return;
+		}
+
+		if (clearTimerRef.current) {
+			window.clearTimeout(clearTimerRef.current);
+		}
+
+		clearTimerRef.current = window.setTimeout(() => {
+			setDisplayEntryUid('');
+			setDisplayExitUid('');
+			setDisplayEntryPlate('');
+			setDisplayExitPlate('');
+			setExpectedEntryPlateByUid('');
+			setExpectedExitPlateByUid('');
+			clearTimerRef.current = null;
+		}, 2500);
+	}, [latestRfidDecisionEvent?.eventId]);
 
 	const handleManualGateCommand = async (
 		gateId: 'entry-gate' | 'exit-gate',
@@ -320,14 +576,15 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 						<h2>Hình ảnh biển số xe</h2>
 						<p>Nhận UID quét từ ESP32 và tự động đối chiếu biển số camera với DB.</p>
 					</header>
-					<p className="plate-preview-meta">RFID UID: {latestScannedUid || 'Chưa có dữ liệu quét'}</p>
+					<p className="plate-preview-meta">RFID UID (Entry): {displayEntryUid || 'Chưa có dữ liệu quét'}</p>
+					<p className="plate-preview-meta">RFID UID (Exit): {displayExitUid || 'Chưa có dữ liệu quét'}</p>
 
 					<div className="plate-preview-stage plate-preview-grid">
 						<div className="plate-preview-frame">
 							<p className="plate-preview-head">CAMERA ENTRY</p>
 							<div className="plate-preview-center">
 								<div className={`plate-visual-number plate-visual-number-${entryPlateMatchStatus}`}>
-									{latestDetectedPlate || 'Chưa có xe vào'}
+									{displayEntryPlate || 'Chưa có xe vào'}
 								</div>
 							</div>
 						</div>
@@ -335,7 +592,7 @@ export const OperatorDashboard = ({ token }: OperatorDashboardProps) => {
 							<p className="plate-preview-head">CAMERA EXIT</p>
 							<div className="plate-preview-center">
 								<div className={`plate-visual-number plate-visual-number-${exitPlateMatchStatus}`}>
-									{latestExitDetectedPlate || 'Chưa có xe ra'}
+									{displayExitPlate || 'Chưa có xe ra'}
 								</div>
 							</div>
 						</div>

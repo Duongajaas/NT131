@@ -4,8 +4,10 @@ import { Server, type Socket } from 'socket.io';
 import { findUserById } from '../repositories/user.repository.ts';
 import { verifyToken, type JwtPayload } from '../utills/password.ts';
 import logger from '../utills/logger.ts';
+import type { RealtimeEventEnvelope } from '../types/realtime-events.ts';
 import { onRealtimeEvent, publishRealtimeEvent } from './realtime-event-bus.service.ts';
 import hardwareGateway from './hardware-gateway.service.ts';
+import { processHardwareRfidScan } from './parking-session.service.ts';
 import type { GateCommand, GateCommandLog } from '../types/hardware-gateway.ts';
 
 interface GateCommandRequestPayload {
@@ -46,6 +48,65 @@ const SUPPORTED_GATE_COMMANDS = ['open', 'close'] as const;
 
 let ioServer: Server | null = null;
 let unsubscribeRealtimeBridge: (() => void) | null = null;
+
+interface LatestVehicleSnapshot {
+	checkpoint: 'entry_rfid' | 'exit_rfid';
+	plateNumber: string;
+	correlationId: string;
+	sessionId?: string;
+	observedAt: string;
+}
+
+const latestVehicleByCheckpoint = new Map<'entry_rfid' | 'exit_rfid', LatestVehicleSnapshot>();
+
+const normalizeCheckpoint = (value?: string) => {
+	if (value === 'exit_rfid') {
+		return 'exit_rfid' as const;
+	}
+	if (value === 'entry_rfid') {
+		return 'entry_rfid' as const;
+	}
+	return undefined;
+};
+
+const normalizePlateNumber = (value?: string) => (value ? value.trim().toUpperCase() : '');
+
+const trackLatestVehicleSnapshot = (event: RealtimeEventEnvelope) => {
+	if (event.eventName !== 'vehicle.state.changed') {
+		return;
+	}
+
+	const payload = (event.payload ?? {}) as Record<string, unknown>;
+	const checkpoint = normalizeCheckpoint(
+		typeof payload.checkpoint === 'string' ? payload.checkpoint : undefined
+	);
+	if (!checkpoint) {
+		return;
+	}
+
+	const state = typeof payload.state === 'string' ? payload.state : '';
+	if (checkpoint === 'entry_rfid' && state !== 'arrived') {
+		return;
+	}
+	if (checkpoint === 'exit_rfid' && state !== 'leaving') {
+		return;
+	}
+
+	const plateNumber = normalizePlateNumber(
+		typeof payload.plateNumber === 'string' ? payload.plateNumber : undefined
+	);
+	if (!plateNumber) {
+		return;
+	}
+
+	latestVehicleByCheckpoint.set(checkpoint, {
+		checkpoint,
+		plateNumber,
+		correlationId: event.correlationId,
+		sessionId: event.sessionId,
+		observedAt: event.occurredAt
+	});
+};
 
 const parseBearerToken = (authorization?: string): string | null => {
 	if (!authorization) {
@@ -116,6 +177,7 @@ const publishGateCommandEvents = (
 	payload: GateCommandRequestPayload,
 	gateLog: GateCommandLog
 ) => {
+	const requestPayload = payload as GateCommandRequestPayload & { seq?: number; ts?: number };
 	publishRealtimeEvent({
 		eventName: 'gate.command.sent',
 		source,
@@ -127,6 +189,8 @@ const publishGateCommandEvents = (
 			result: gateLog.result,
 			state: gateLog.stateAfter,
 			commandId: gateLog.commandId,
+			seq: requestPayload.seq,
+			ts: requestPayload.ts,
 			reason: source === 'operator' ? 'operator_manual_command' : 'simulator_manual_override'
 		}
 	});
@@ -156,6 +220,7 @@ const executeGateCommand = async ({
 	actorName: string;
 	ack?: (value: unknown) => void;
 }) => {
+	const requestPayload = payload as GateCommandRequestPayload & { seq?: number; ts?: number };
 	if (!payload?.gateId || !payload?.command) {
 		ack?.({ success: false, message: 'gateId and command are required' });
 		return;
@@ -194,6 +259,15 @@ const executeGateCommand = async ({
 				: await hardwareGateway.closeGate(payload.gateId, gateCommand);
 
 		publishGateCommandEvents(source, { ...payload, correlationId }, gateLog);
+		// Preserve optional test metadata for downstream ACK/loss tracking.
+		if (requestPayload.seq !== undefined || requestPayload.ts !== undefined) {
+			logger.debug('Gate command metadata preserved', {
+				socketId: socket.id,
+				seq: requestPayload.seq,
+				ts: requestPayload.ts,
+				correlationId
+			});
+		}
 
 		logger.info('Gate command completed', {
 			socketId: socket.id,
@@ -239,6 +313,8 @@ const bridgeRealtimeEventToRooms = () => {
 		if (!ioServer) {
 			return;
 		}
+
+		trackLatestVehicleSnapshot(event);
 
 		ioServer.to('operator').emit('realtime.event', event);
 		ioServer.to('simulator').emit('realtime.event', event);
@@ -348,6 +424,17 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 				argsCount: args.length,
 				firstArgType: args[0] ? typeof args[0] : 'undefined'
 			});
+
+			if (event === 'gate.ack' || event === 'event.ack') {
+				const payload = args[0] as Record<string, unknown> | undefined;
+				if (payload && typeof payload === 'object') {
+					publishRealtimeEvent({
+						eventName: event,
+						source: 'hardware-gateway',
+						payload
+					});
+				}
+			}
 		});
 
 		// Debug: Log errors
@@ -465,7 +552,7 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 
 		socket.on(
 			'hardware.rfid.scan',
-			(payload: HardwareRfidScanPayload, ack?: (value: unknown) => void) => {
+			async (payload: HardwareRfidScanPayload, ack?: (value: unknown) => void) => {
 				if (!socket.rooms.has('hardware')) {
 					logger.warn('Hardware RFID scan rejected', {
 						socketId: socket.id,
@@ -504,11 +591,77 @@ export const initializeSocketServer = (httpServer: HttpServer) => {
 					payload: {
 						uid: normalizedUid,
 						checkpoint,
-						status: 'requested'
+						status: 'requested',
+						plateNumber: latestVehicleByCheckpoint.get(checkpoint)?.plateNumber
 					}
 				});
 
 				ack?.({ success: true, correlationId });
+
+				const latestVehicle = latestVehicleByCheckpoint.get(checkpoint);
+				const observedPlate = latestVehicle?.plateNumber;
+				if (!observedPlate) {
+					logger.warn('Hardware RFID scan missing plate snapshot', {
+						socketId: socket.id,
+						uid: normalizedUid,
+						checkpoint,
+						correlationId
+					});
+					publishRealtimeEvent({
+						eventName: 'rfid.scan.rejected',
+						source: 'backend',
+						correlationId,
+						sessionId: payload.sessionId,
+						payload: {
+							uid: normalizedUid,
+							checkpoint,
+							status: 'rejected',
+							reason: 'plate_not_detected'
+						}
+					});
+					return;
+				}
+
+				try {
+					const decision = await processHardwareRfidScan({
+						uid: normalizedUid,
+						checkpoint,
+						plate_number: observedPlate,
+						correlation_id: correlationId
+					});
+
+					logger.info('Hardware RFID scan processed', {
+						socketId: socket.id,
+						uid: normalizedUid,
+						checkpoint,
+						plateNumber: observedPlate,
+						correlationId,
+						sessionId: decision.sessionId,
+						gateAction: decision.gate_action,
+						reason: decision.reason
+					});
+				} catch (error) {
+					logger.error('Hardware RFID scan processing failed', {
+						socketId: socket.id,
+						uid: normalizedUid,
+						checkpoint,
+						plateNumber: observedPlate,
+						correlationId,
+						error
+					});
+					publishRealtimeEvent({
+						eventName: 'rfid.scan.rejected',
+						source: 'backend',
+						correlationId,
+						sessionId: payload.sessionId,
+						payload: {
+							uid: normalizedUid,
+							checkpoint,
+							status: 'rejected',
+							reason: 'processing_failed'
+						}
+					});
+				}
 			}
 		);
 

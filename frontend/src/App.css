@@ -461,7 +461,7 @@
 
 .operator-workspace-grid-single {
 	grid-template-columns: minmax(0, 1fr);
-	margin-bottom: 50px;
+	margin-bottom: 200px;
 }
 
 .operator-workspace-grid-single .operator-plate-panel {

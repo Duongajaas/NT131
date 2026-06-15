@@ -1,18 +1,20 @@
 # NT131 Frontend Console
 
-## Description
-This is the frontend dashboard for NT131 Smart Parking.
+## Overview
 
-It provides a role-based interface for:
-- Operator workflow (RFID verification, gate control, parking status).
-- Admin workflow (management and monitoring pages).
+The frontend is the smart parking operations dashboard. It connects to the backend through REST API and Socket.IO so operators and admins can monitor realtime state from the 3D simulator and real ESP32 hardware.
 
-Built with React, TypeScript, and Vite for educational and integration purposes.
+The app supports:
+
+- Login and role-based navigation.
+- Operator workflow for RFID, license plate, entry/exit gates, and parking status.
+- Admin workflow for system data management.
+- Realtime event feed from the backend: sessions, gates, slots, RFID, and vehicle state.
+- Toast notifications for actions and errors.
 
 ## Technologies
-We are using the following technologies:
 
-- React
+- React 19
 - TypeScript
 - Vite
 - React Router
@@ -21,33 +23,22 @@ We are using the following technologies:
 - Socket.IO Client
 - ESLint
 
-## Installation and Running
-### Prerequisites
+## Requirements
+
 - Node.js 22+
-- Backend service running (default local URL: `http://localhost:5000`)
+- Running backend service, default local URL: `http://localhost:5000`
+- For realtime ESP32/simulator workflows, configure the backend with `SIMULATOR_API_KEY`, `HARDWARE_*`, and CORS values.
 
-### Environment
-Create `.env` from the provided example:
+## Installation and Running
 
 ```bash
+cd frontend
 cp .env.example .env
-```
-
-Default `.env` values:
-
-```env
-VITE_API_BASE_URL=http://localhost:5000/api/v1
-VITE_SOCKET_URL=http://localhost:5000
-VITE_SIMULATOR_API_KEY=
-```
-
-### Run application
-```bash
 npm install
 npm run dev
 ```
 
-After running, open the app at the Vite URL (usually `http://localhost:5173`).
+Open the Vite URL shown in the terminal, usually `http://localhost:5173`.
 
 Build for production:
 
@@ -61,75 +52,106 @@ Preview production build:
 npm run preview
 ```
 
+## Environment Variables
+
+`.env.example`:
+
+```env
+VITE_API_BASE_URL=http://localhost:5000/api/v1
+VITE_SOCKET_URL=http://localhost:5000
+VITE_SIMULATOR_API_KEY=
+```
+
+Notes:
+
+- `VITE_API_BASE_URL`: REST API base URL.
+- `VITE_SOCKET_URL`: backend Socket.IO host.
+- `VITE_SIMULATOR_API_KEY`: available for local simulator-related integration flows.
+
+When running through Docker Compose, build args in `docker-compose.yml` point the app to `http://localhost:3000`.
+
 ## Project Structure
-This frontend is organized by feature and shared layers:
 
 ```text
 src
-├── api          # HTTP clients and API modules
-├── components   # Shared UI components
-├── hooks        # Custom React hooks
-├── lib          # Utility helpers
-├── pages        # Route-level pages (login/operator/admin)
-├── store        # Zustand state stores
-├── types        # TypeScript types/interfaces
-├── App.tsx      # Route setup and protected route logic
-└── main.tsx     # App bootstrap
+├── api          # Axios client and API modules
+├── components   # Shared components: dashboards, frame, event feed, status cards
+├── hooks        # Operator realtime hooks
+├── lib          # Auth/session/socket/toast helpers
+├── pages        # Login, operator, admin
+├── store        # Zustand stores
+├── types        # TypeScript contracts with backend/realtime events
+├── App.tsx      # Router and protected routes
+└── main.tsx     # React app bootstrap
 ```
 
 ## Routes
-Main app routes:
 
-- `/login`: authentication page
-- `/operator`: operator dashboard
-- `/admin`: admin dashboard
+- `/login`: login page.
+- `/operator`: operator dashboard.
+- `/admin`: admin dashboard.
 
-Unknown routes are redirected based on current authenticated role.
+Unknown routes are redirected based on authentication state and current role.
 
-### Route Flowchart
 ```mermaid
 flowchart LR
-U[User] --> BR[BrowserRouter]
-BR -->|/login| L[LoginPage]
-BR -->|/operator| P1[ProtectedRoute]
-BR -->|/admin| P2[ProtectedRoute]
-P1 --> OP[OperatorPage]
-P2 --> AD[AdminPage]
-BR -->|*| D[DefaultRedirect]
-D --> R[Redirect by role]
+  U[User] --> BR[BrowserRouter]
+  BR -->|/login| L[LoginPage]
+  BR -->|/operator| OP[Protected OperatorPage]
+  BR -->|/admin| AD[Protected AdminPage]
+  OP --> API[REST API]
+  AD --> API
+  OP --> SIO[Socket.IO operator.join]
+  SIO --> EVT[Realtime events]
+  EVT --> UI[Update dashboard]
 ```
 
-## Workflow of a Frontend Request
-1. User interacts with page components.
-2. Page calls API functions in `src/api`.
-3. Backend returns REST data and emits realtime events.
-4. Frontend store/state updates UI.
+## Realtime Integration
 
-### Workflow Flowchart
-```mermaid
-flowchart LR
-U[User Action] --> PAGE[Page Component]
-PAGE --> API[API module in src/api]
-API --> AX[Axios request]
-AX --> BE[Backend API]
-BE --> RES[Response]
-RES --> STORE[Zustand store and local state]
-STORE --> UI[UI re-render]
-BE --> SOCK[Socket.IO event]
-SOCK --> UI
+The frontend listens for `realtime.event` from the backend and updates the UI for events such as:
+
+- `rfid.scan.requested`
+- `rfid.scan.accepted`
+- `rfid.scan.rejected`
+- `gate.command.sent`
+- `gate.state.changed`
+- `vehicle.state.changed`
+- `session.created`
+- `session.updated`
+- `session.completed`
+- `slot.assigned`
+- `slot.released`
+
+Expected operations flow:
+
+1. The simulator moves a vehicle to a checkpoint and emits `simulator.stage.changed`.
+2. ESP32 scans a real RFID card and sends `hardware.rfid.scan`.
+3. The backend processes the scan and emits accepted/rejected events.
+4. The operator sees the updated state on the dashboard.
+5. Gate commands are sent by the backend to ESP32 through Socket.IO, and the frontend updates gate state in realtime.
+
+## Frontend Checks
+
+Quick checks:
+
+```bash
+npm run build
+npm run lint
 ```
 
-## Development
-Current focus:
-- Keep operator/admin flows stable with backend API contracts.
-- Keep realtime Socket.IO handling aligned with backend event contracts.
+Integration check:
 
-Planned improvements:
-- Add integration tests for critical operator actions.
-- Add UI/UX and accessibility refinements.
+1. Start the backend.
+2. Start the frontend.
+3. Start the 3D simulator or ESP32 hardware.
+4. Log in as operator/admin.
+5. Watch the event feed while the simulator/ESP32 emits RFID, gate, and parking session events.
 
-## References
-- React documentation
-- Vite documentation
-- TypeScript documentation
-- Socket.IO documentation
+To evaluate realtime latency for the ESP32 FreeRTOS workflow, use the scripts in the root `tools` directory. The frontend acts as the operations observer for those tests.
+
+## Related Documentation
+
+- `../backend/README.md`
+- `../hardware/README.md`
+- `../docs/architecture/realtime-event-contract.md`
+- `../docs/architecture/operator-integration-contract.md`

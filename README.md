@@ -22,7 +22,7 @@ The main goal is to validate a near-real smart parking workflow: the simulator d
 | `simulator-3d` | 3D app for vehicle entry/exit simulation, RFID checkpoints, and realtime events |
 | `hardware` | ESP32 firmware, pin configuration, FreeRTOS tasks, and hardware wiring guide |
 | `tools` | Socket.IO/FreeRTOS test scripts, JSON results, and generated charts |
-| `docs` | Architecture documents, realtime contracts, and database notes |
+| `docs` | ArchitectureKiến trúckiến trúc, tổ chức✓× documents, realtime contracts, and database notes |
 
 ## Technologies
 
@@ -35,7 +35,9 @@ The main goal is to validate a near-real smart parking workflow: the simulator d
 - RC522 RFID, servo gates, LCD I2C 16x2
 - Docker and Docker Compose
 
-## System Architecture
+## System ArchitectureKiến trúckiến trúc, tổ chức✓×
+<img width="1126" height="786" alt="image" src="https://github.com/user-attachments/assets/18426e92-0a38-4ff2-b649-465f3c5873a9" />
+
 
 ```mermaid
 flowchart LR
@@ -100,6 +102,9 @@ The backend is the central coordination point between UI, simulator, database, a
 - ESP32 runs hardware work in isolated FreeRTOS tasks so WiFi, RFID polling, servo control, LCD display, and realtime events can progress concurrently.
 
 ## Operating Flow
+
+<img width="940" height="820" alt="image" src="https://github.com/user-attachments/assets/f8ad9724-9f39-4e92-ade1-d5a10f436fec" />
+
 
 The complete entry/exit flow combines license plate context from the simulator, RFID data from ESP32, backend validation, MongoDB state, and servo control:
 

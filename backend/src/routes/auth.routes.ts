@@ -13,6 +13,7 @@ import {
 
 const authRouter = express.Router();
 
+// Tạo tài khoản operator chỉ dành cho admin
 authRouter.post(
 	'/register',
 	authenticateToken,

@@ -2,6 +2,8 @@
 
 ## Overview
 
+<img width="1126" height="786" alt="image" src="https://github.com/user-attachments/assets/18426e92-0a38-4ff2-b649-465f3c5873a9" />
+
 This is a smart parking project for NT131. The system now supports both a 3D simulator and real ESP32 hardware, including:
 
 - Backend API and Socket.IO realtime gateway.
@@ -36,7 +38,6 @@ The main goal is to validate a near-real smart parking workflow: the simulator d
 - Docker and Docker Compose
 
 ## System ArchitectureKiến trúckiến trúc, tổ chức✓×
-<img width="1126" height="786" alt="image" src="https://github.com/user-attachments/assets/18426e92-0a38-4ff2-b649-465f3c5873a9" />
 
 
 ```mermaid
@@ -103,7 +104,8 @@ The backend is the central coordination point between UI, simulator, database, a
 
 ## Operating Flow
 
-<img width="940" height="820" alt="image" src="https://github.com/user-attachments/assets/f8ad9724-9f39-4e92-ade1-d5a10f436fec" />
+<img width="1100" height="960" alt="Blank diagram" src="https://github.com/user-attachments/assets/66d3e816-47fe-4584-9806-6780296904ee" />
+
 
 
 The complete entry/exit flow combines license plate context from the simulator, RFID data from ESP32, backend validation, MongoDB state, and servo control:

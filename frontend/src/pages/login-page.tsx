@@ -18,6 +18,7 @@ export const LoginPage = () => {
 	const [username, setUsername] = useState('');
 	const [password, setPassword] = useState('');
 	const [busy, setBusy] = useState(false);
+	const [show, setShow] = useState(false);
 
 	useEffect(() => {
 		if (!isHydrated || !token || !role) {
@@ -66,12 +67,22 @@ export const LoginPage = () => {
 					<label className="field">
 						<span>Mật khẩu</span>
 						<input
-							type="password"
+							className="password-input"
+							type={show ? "text" : "password"}
 							value={password}
 							onChange={(event) => setPassword(event.target.value)}
 							placeholder="password"
 							required
 						/>
+
+						<button
+							type="button"
+							className="password-toggle"
+							onClick={() => setShow(!show)}
+							aria-label={show ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+						>
+							{show ? "🙈" : "👁️"}
+						</button>
 					</label>
 
 					<button type="submit" className="btn" disabled={busy}>

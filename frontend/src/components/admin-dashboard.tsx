@@ -80,7 +80,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 	const paidTransactions = revenueReport?.summary.paid_transactions ?? 0;
 	const recentTransactions: TransactionRecord[] = revenueReport?.transactions ?? [];
 
-	const loadDashboard = async () => {
+	const loadDashboard = async (showSuccessToast = false) => {
 		setLoading(true);
 		try {
 			const [residentRows, monthlyCardRows, report, pricingRows] = await Promise.all([
@@ -101,7 +101,9 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 			setMonthlyCards(monthlyCardRows);
 			setRevenueReport(report);
 			setPricingPolicies(pricingRows);
-			notifySuccess('Đã tải dữ liệu admin thành công');
+			if (showSuccessToast) {
+				notifySuccess('Đã tải dữ liệu admin thành công');
+			}
 		} catch (loadError) {
 			notifyError(loadError instanceof Error ? loadError.message : 'Tải dữ liệu admin thất bại');
 		} finally {
@@ -115,8 +117,20 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 	}, []);
 
 	const createResidentAndCard = async () => {
-		if (!fullName || !apartmentNo || !plateNumber || !uid || !startedAt || !expiresAt) {
-			notifyError('Thiếu dữ liệu để tạo cư dân và cấp thẻ tháng');
+		const missingFields = [
+			[fullName.trim(), 'họ tên'],
+			[apartmentNo.trim(), 'căn hộ'],
+			[plateNumber.trim(), 'biển số xe'],
+			[uid.trim(), 'UID RFID'],
+			[monthlyFee.trim(), 'phí tháng'],
+			[startedAt, 'ngày bắt đầu'],
+			[expiresAt, 'ngày hết hạn']
+		]
+			.filter(([value]) => !value)
+			.map(([, label]) => label);
+
+		if (missingFields.length > 0) {
+			notifyError(`Vui lòng nhập ${missingFields.join(', ')}.`);
 			return;
 		}
 
@@ -172,8 +186,15 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 	};
 
 	const createOperatorAccount = async () => {
-		if (!operatorUsername || !operatorPassword) {
-			notifyError('Thiếu username hoặc password để tạo operator');
+		const missingFields = [
+			[operatorUsername.trim(), 'username'],
+			[operatorPassword, 'mật khẩu']
+		]
+			.filter(([value]) => !value)
+			.map(([, label]) => label);
+
+		if (missingFields.length > 0) {
+			notifyError(`Vui lòng nhập ${missingFields.join(', ')} để tạo operator.`);
 			return;
 		}
 
@@ -205,7 +226,12 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 		const parsedLevel = Number(slotLevel);
 
 		if (!normalizedSlotCode) {
-			notifyError('Thiếu mã slot để tạo slot mới');
+			notifyError('Vui lòng nhập mã slot.');
+			return;
+		}
+
+		if (!slotLevel.trim()) {
+			notifyError('Vui lòng nhập level slot.');
 			return;
 		}
 
@@ -240,6 +266,16 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 		const parsedPrice = Number(pricingPricePerHour);
 		const parsedFreeMinutes = Number(pricingFreeMinutes);
 		const normalizedEffectiveFrom = pricingEffectiveFrom.trim();
+
+		if (!pricingPricePerHour.trim()) {
+			notifyError('Vui lòng nhập phí theo giờ.');
+			return;
+		}
+
+		if (!pricingFreeMinutes.trim()) {
+			notifyError('Vui lòng nhập số phút miễn phí.');
+			return;
+		}
 
 		if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
 			notifyError('Giá theo giờ phải là số không âm');
@@ -364,6 +400,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									value={slotCode}
 									onChange={(event) => setSlotCode(event.target.value.toUpperCase())}
 									placeholder="A01"
+									required
 								/>
 							</label>
 							<label className="field">
@@ -374,16 +411,18 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									value={slotLevel}
 									onChange={(event) => setSlotLevel(event.target.value)}
 									placeholder="0"
+									required
 								/>
 							</label>
 							<label className="field">
 								<span>Loại slot</span>
-									<select
-										value={slotType}
-										onChange={(event) =>
-											setSlotType(event.target.value as 'regular' | 'motorbike' | 'handicap')
-										}
-									>
+								<select
+									value={slotType}
+									onChange={(event) =>
+										setSlotType(event.target.value as 'regular' | 'motorbike' | 'handicap')
+									}
+									required
+								>
 									<option value="regular">Regular</option>
 									<option value="motorbike">Motorbike</option>
 									<option value="handicap">Handicap</option>
@@ -412,6 +451,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									onChange={(event) =>
 										setPricingVehicleType(event.target.value as 'motorbike' | 'car')
 									}
+									required
 								>
 									<option value="car">Ô tô</option>
 									<option value="motorbike">Xe máy</option>
@@ -422,6 +462,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 								<select
 									value={pricingCardType}
 									onChange={(event) => setPricingCardType(event.target.value as 'monthly' | 'guest')}
+									required
 								>
 									<option value="guest">Khách vãng lai</option>
 									<option value="monthly">Thẻ tháng</option>
@@ -445,6 +486,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									min={0}
 									value={pricingPricePerHour}
 									onChange={(event) => setPricingPricePerHour(event.target.value)}
+									required
 								/>
 							</label>
 							<label className="field">
@@ -454,6 +496,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									min={0}
 									value={pricingFreeMinutes}
 									onChange={(event) => setPricingFreeMinutes(event.target.value)}
+									required
 								/>
 							</label>
 						</div>
@@ -530,7 +573,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 						</div>
 
 						<div className="button-row">
-							<button type="button" className="btn" onClick={() => void loadDashboard()} disabled={loading}>
+							<button type="button" className="btn" onClick={() => void loadDashboard(true)} disabled={loading}>
 								{loading ? 'Đang tải...' : 'Làm mới báo cáo'}
 							</button>
 						</div>
@@ -549,7 +592,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 							</label>
 							<label className="field">
 								<span>Username</span>
-								<input value={operatorUsername} onChange={(event) => setOperatorUsername(event.target.value)} />
+								<input value={operatorUsername} onChange={(event) => setOperatorUsername(event.target.value)} required />
 							</label>
 						</div>
 
@@ -559,6 +602,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 								type="password"
 								value={operatorPassword}
 								onChange={(event) => setOperatorPassword(event.target.value)}
+								required
 							/>
 						</label>
 
@@ -583,7 +627,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 						<div className="split-field-grid">
 							<label className="field">
 								<span>Họ tên</span>
-								<input value={fullName} onChange={(event) => setFullName(event.target.value)} />
+								<input value={fullName} onChange={(event) => setFullName(event.target.value)} required />
 							</label>
 							<label className="field">
 								<span>Điện thoại</span>
@@ -594,7 +638,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 						<div className="split-field-grid">
 							<label className="field">
 								<span>Căn hộ</span>
-								<input value={apartmentNo} onChange={(event) => setApartmentNo(event.target.value)} />
+								<input value={apartmentNo} onChange={(event) => setApartmentNo(event.target.value)} required />
 							</label>
 							<label className="field">
 								<span>Loại xe</span>
@@ -603,6 +647,7 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									onChange={(event) =>
 										setVehicleType(event.target.value as 'motorbike' | 'car')
 									}
+									required
 								>
 									<option value="car">Ô tô</option>
 									<option value="motorbike">Xe máy</option>
@@ -613,11 +658,11 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 						<div className="split-field-grid">
 							<label className="field">
 								<span>Biển số xe</span>
-								<input value={plateNumber} onChange={(event) => setPlateNumber(event.target.value)} />
+								<input value={plateNumber} onChange={(event) => setPlateNumber(event.target.value)} required />
 							</label>
 							<label className="field">
 								<span>UID RFID</span>
-								<input value={uid} onChange={(event) => setUid(event.target.value)} />
+								<input value={uid} onChange={(event) => setUid(event.target.value)} required />
 							</label>
 						</div>
 
@@ -629,15 +674,16 @@ export const AdminDashboard = ({ token }: AdminDashboardProps) => {
 									min={0}
 									value={monthlyFee}
 									onChange={(event) => setMonthlyFee(event.target.value)}
+									required
 								/>
 							</label>
 							<label className="field">
 								<span>Bắt đầu</span>
-								<input type="date" value={startedAt} onChange={(event) => setStartedAt(event.target.value)} />
+								<input type="date" value={startedAt} onChange={(event) => setStartedAt(event.target.value)} required />
 							</label>
 							<label className="field">
 								<span>Hết hạn</span>
-								<input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} />
+								<input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} required />
 							</label>
 						</div>
 

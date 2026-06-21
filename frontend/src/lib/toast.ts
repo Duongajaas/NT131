@@ -1,7 +1,21 @@
 import { toast } from 'react-hot-toast';
 
-export const notifySuccess = (message: string) => toast.success(message, { id: message });
+const buildToastId = (type: 'success' | 'error' | 'info', message: string) => `${type}:${message}`;
 
-export const notifyError = (message: string) => toast.error(message, { id: message });
+export const notifySuccess = (message: string) =>
+	toast.success(message, {
+		id: buildToastId('success', message),
+		duration: 2600
+	});
 
-export const notifyInfo = (message: string) => toast(message, { id: message });
+export const notifyError = (message: string) =>
+	toast.error(message, {
+		id: buildToastId('error', message),
+		duration: 4600
+	});
+
+export const notifyInfo = (message: string) =>
+	toast(message, {
+		id: buildToastId('info', message),
+		duration: 3200
+	});

@@ -67,7 +67,7 @@ const processQueue = (error: unknown, token: string | null = null) => {
 };
 
 const isAuthRoute = (url?: string) => {
-	return Boolean(url && ['/auth/login', '/auth/register', '/auth/refresh-token'].some((route) => url.includes(route)));
+	return Boolean(url && ['/auth/login', '/auth/refresh-token'].some((route) => url.includes(route)));
 };
 
 const getErrorMessage = (data: unknown, fallback: string) => {

@@ -6,6 +6,7 @@ import {
 	saveStoredAuthSession,
 	type StoredAuthSession
 } from '../lib/auth-session';
+import { isTokenExpired } from '../lib/auth';
 
 interface AuthState {
 	isHydrated: boolean;
@@ -27,7 +28,10 @@ export const useAuthStore = create<AuthState>((set) => ({
 	role: undefined,
 	hydrate: () => {
 		const session = readStoredAuthSession();
-		if (!session) {
+		if (!session || isTokenExpired(session.refreshToken)) {
+			if (session) {
+				clearStoredAuthSession();
+			}
 			set({
 				isHydrated: true,
 				token: undefined,

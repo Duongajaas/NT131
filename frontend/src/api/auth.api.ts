@@ -25,6 +25,15 @@ export const login = async (input: LoginInput) => {
 	return response.data;
 };
 
+export const refreshAuthToken = async (refreshToken: string) => {
+	const response = await requestJson<ApiEnvelope<AuthPayload>>('/auth/refresh-token', {
+		method: 'POST',
+		skipAuthRefresh: true,
+		body: JSON.stringify({ refreshToken })
+	});
+	return response.data;
+};
+
 export const registerUser = async (
 	input: RegisterUserInput,
 	{ token }: AuthOptions
